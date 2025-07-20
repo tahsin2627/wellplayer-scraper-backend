@@ -42,30 +42,20 @@ def get_2embed_link(imdb_id, media_type, season=None, episode=None):
     return None
 
 def scrape_skymovieshd(query):
-    """Source 4: skymovieshd.land (Smarter, multi-step version)"""
+    """Source 4: skymovieshd.land"""
     base_url = "https://skymovieshd.land/"
     try:
         search_url = f"{base_url}?s={quote_plus(query)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        
         search_response = requests.get(search_url, headers=headers, timeout=10)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
-
         post_content = search_soup.find('div', class_='post-content')
-        if not post_content:
-            print("SkymoviesHD: No post-content found on search page.")
-            return None
-            
+        if not post_content: return None
         title_link_element = post_content.find('a')
-        if not title_link_element or not title_link_element.has_attr('href'):
-            print("SkymoviesHD: No link found in post-content.")
-            return None
-        
+        if not title_link_element or not title_link_element.has_attr('href'): return None
         movie_page_url = title_link_element['href']
-
         movie_response = requests.get(movie_page_url, headers=headers, timeout=10)
         movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-
         found_links = []
         for link in movie_soup.find_all('a'):
             link_text = link.text.lower()
@@ -73,48 +63,59 @@ def scrape_skymovieshd(query):
             if 'stream' in link_text or 'download' in link_text or 'watch' in link_text:
                 full_url = urljoin(base_url, link_href)
                 found_links.append(full_url)
-        
         return found_links[0] if found_links else None
-
     except Exception as e:
         print(f"Error scraping SkymoviesHD: {e}")
         return None
 
-# --- NEW, ADVANCED SCRAPER FOR CINEFREAK ---
 def scrape_cinefreak(query):
-    """Source 5: cinefreak.net (Multi-step scraper)"""
+    """Source 5: cinefreak.net"""
     base_url = "https://cinefreak.net/"
     try:
         search_url = f"{base_url}?s={quote_plus(query)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        search_response = requests.get(search_url, headers=headers, timeout=15)
+        search_soup = BeautifulSoup(search_response.text, 'lxml')
+        movie_link_element = search_soup.find('a', class_='post-image-container')
+        if not movie_link_element or not movie_link_element.has_attr('href'): return None
+        movie_page_url = movie_link_element['href']
+        movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
+        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
+        iframe = movie_soup.find('iframe')
+        if iframe and iframe.has_attr('src'):
+            return urljoin(base_url, iframe['src'])
+        return None
+    except Exception as e:
+        print(f"Error scraping Cinefreak: {e}")
+        return None
+
+# --- NEW SCRAPER FOR DONGOBD ---
+def scrape_dongobd(query):
+    """Source 6: dongobd.com"""
+    base_url = "https://dongobd.com/"
+    try:
+        search_url = f"{base_url}?s={quote_plus(query)}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         
-        # Step 1: Search for the movie
         search_response = requests.get(search_url, headers=headers, timeout=15)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
 
-        # Step 2: Find the link to the movie's page
-        movie_link_element = search_soup.find('a', class_='post-image-container')
+        movie_link_element = search_soup.find('a', class_='lnk-blk')
         if not movie_link_element or not movie_link_element.has_attr('href'):
-            print("Cinefreak: No movie link found in search results.")
             return None
         
         movie_page_url = movie_link_element['href']
 
-        # Step 3: Go to the movie's page
         movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
         movie_soup = BeautifulSoup(movie_response.text, 'lxml')
 
-        # Step 4: Find the final streaming link (often in an iframe)
         iframe = movie_soup.find('iframe')
         if iframe and iframe.has_attr('src'):
-            final_link = urljoin(base_url, iframe['src'])
-            return final_link
+            return urljoin(base_url, iframe['src'])
         
-        print("Cinefreak: No iframe found on movie page.")
         return None
-
     except Exception as e:
-        print(f"Error scraping Cinefreak: {e}")
+        print(f"Error scraping Dongobd: {e}")
         return None
 
 # --- Main API Endpoint ---
@@ -130,14 +131,15 @@ def search():
     try:
         all_links = []
         
-        # Run our direct scrapers first
+        # Run direct query scrapers first
         skymovies_link = scrape_skymovieshd(query)
-        if skymovies_link:
-            all_links.append(skymovies_link)
+        if skymovies_link: all_links.append(skymovies_link)
         
         cinefreak_link = scrape_cinefreak(query)
-        if cinefreak_link:
-            all_links.append(cinefreak_link)
+        if cinefreak_link: all_links.append(cinefreak_link)
+
+        dongobd_link = scrape_dongobd(query)
+        if dongobd_link: all_links.append(dongobd_link)
 
         # Use TMDB to get IDs for the other scrapers
         tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
@@ -158,8 +160,7 @@ def search():
             if imdb_id:
                 all_links.extend(get_vidsrc_links(imdb_id, media_type))
                 link_2embed = get_2embed_link(imdb_id, media_type)
-                if link_2embed:
-                    all_links.append(link_2embed)
+                if link_2embed: all_links.append(link_2embed)
 
         if not all_links:
             return jsonify({"error": "Could not find any streaming links from any source."}), 404
