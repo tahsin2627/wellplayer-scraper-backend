@@ -1,12 +1,12 @@
 import os
 import requests
+from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
 
-# Get your TMDB API Key from environment variables
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 
 # --- Scraper Functions for Each Source ---
@@ -40,8 +40,35 @@ def get_2embed_link(imdb_id, media_type, season=None, episode=None):
         print(f"Error getting 2embed link: {e}")
     return None
 
+def scrape_sflix(query):
+    """Source 4: sflix.to"""
+    try:
+        search_url = f"https://sflix.to/search/{query.replace(' ', '-')}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        search_response = requests.get(search_url, headers=headers)
+        search_soup = BeautifulSoup(search_response.text, 'lxml')
+
+        first_result = search_soup.find('a', class_='flw-item-tip')
+        if not first_result or not first_result.has_attr('href'):
+            return None
+
+        movie_page_url = "https://sflix.to" + first_result['href']
+        movie_response = requests.get(movie_page_url, headers=headers)
+        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
+
+        watch_button = movie_soup.find('a', class_='btn-play')
+        if not watch_button or not watch_button.has_attr('href'):
+            return None
+            
+        embed_path = watch_button['href'].replace('/watch-', '/embed-')
+        final_link = "https://sflix.to" + embed_path
+        return final_link
+    except Exception as e:
+        print(f"Error scraping sflix: {e}")
+        return None
+
 def get_fmoviesz_link(tmdb_id, media_type, season=None, episode=None):
-    """Source 4: fmoviesz.to (uses TMDB ID)"""
+    """Source 5: fmoviesz.to (uses TMDB ID)"""
     try:
         if media_type == 'movie':
             return f"https://fmoviesz.to/movie/{tmdb_id}"
@@ -52,18 +79,11 @@ def get_fmoviesz_link(tmdb_id, media_type, season=None, episode=None):
     except Exception as e:
         print(f"Error getting fmoviesz link: {e}")
     return None
-    
-# --- Main API Endpoint ---
 
+# --- Main API Endpoint ---
 @app.route('/search')
 def search():
-    """
-    Searches for a title using the TMDB API, then finds streaming links from all sources.
-    """
     query = request.args.get('query')
-    season = request.args.get('s')
-    episode = request.args.get('e')
-
     if not query:
         return jsonify({"error": "A 'query' parameter is required."}), 400
     
@@ -71,7 +91,6 @@ def search():
         return jsonify({"error": "TMDB_API_KEY is not configured on the server."}), 500
 
     try:
-        # --- Step 1: Search TMDB to get IDs and info ---
         tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
         tmdb_response = requests.get(tmdb_search_url)
         tmdb_data = tmdb_response.json()
@@ -83,7 +102,6 @@ def search():
         tmdb_id = first_result.get("id")
         media_type = first_result.get("media_type")
         
-        # --- Step 2: Get the IMDb ID for sources that need it ---
         details_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
         details_response = requests.get(details_url)
         details_data = details_response.json()
@@ -91,20 +109,22 @@ def search():
         imdb_id = details_data.get("imdb_id")
         title = first_result.get("name") or first_result.get("title")
 
-        if not imdb_id:
-            return jsonify({"error": "Could not find IMDb ID for this title."}), 404
-
-        # --- Step 3: Scrape all sources and collect the links ---
         all_links = []
-        all_links.extend(get_vidsrc_links(imdb_id, media_type, season, episode))
         
-        link_2embed = get_2embed_link(imdb_id, media_type, season, episode)
-        if link_2embed:
-            all_links.append(link_2embed)
+        if imdb_id:
+            all_links.extend(get_vidsrc_links(imdb_id, media_type))
+            link_2embed = get_2embed_link(imdb_id, media_type)
+            if link_2embed:
+                all_links.append(link_2embed)
+        
+        sflix_link = scrape_sflix(query)
+        if sflix_link:
+            all_links.append(sflix_link)
             
-        link_fmoviesz = get_fmoviesz_link(tmdb_id, media_type, season, episode)
-        if link_fmoviesz:
-            all_links.append(link_fmoviesz)
+        if tmdb_id:
+            fmoviesz_link = get_fmoviesz_link(tmdb_id, media_type)
+            if fmoviesz_link:
+                all_links.append(fmoviesz_link)
 
         if not all_links:
             return jsonify({"error": "Could not find any streaming links from any source."}), 404
@@ -117,7 +137,6 @@ def search():
 
 @app.route('/')
 def index():
-    """A simple health-check page."""
     return "WellPlayer Scraper Backend is running!"
 
 if __name__ == '__main__':
