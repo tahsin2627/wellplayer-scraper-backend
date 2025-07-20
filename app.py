@@ -3,7 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 
 app = Flask(__name__)
 CORS(app)
@@ -41,74 +41,52 @@ def get_2embed_link(imdb_id, media_type, season=None, episode=None):
         print(f"Error getting 2embed link: {e}")
     return None
 
-def scrape_sflix(query):
-    """Source 4: sflix.to"""
+# --- UPGRADED, MORE ADVANCED SCRAPER ---
+def scrape_skymovieshd(query):
+    """Source 4: skymovieshd.land (Smarter, multi-step version)"""
+    base_url = "https://skymovieshd.land/"
     try:
-        search_url = f"https://sflix.to/search/{query.replace(' ', '-')}"
+        search_url = f"{base_url}?s={quote_plus(query)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        
+        # Step 1: Search for the movie
         search_response = requests.get(search_url, headers=headers, timeout=10)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
-        first_result = search_soup.find('a', class_='flw-item-tip')
-        if not first_result or not first_result.has_attr('href'):
+
+        # Step 2: Find the link to the movie's page
+        post_content = search_soup.find('div', class_='post-content')
+        if not post_content:
+            print("SkymoviesHD: No post-content found on search page.")
             return None
-        movie_page_url = "https://sflix.to" + first_result['href']
+            
+        title_link_element = post_content.find('a')
+        if not title_link_element or not title_link_element.has_attr('href'):
+            print("SkymoviesHD: No link found in post-content.")
+            return None
+        
+        movie_page_url = title_link_element['href']
+
+        # Step 3: Go to the movie's page
         movie_response = requests.get(movie_page_url, headers=headers, timeout=10)
         movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-        watch_button = movie_soup.find('a', class_='btn-play')
-        if not watch_button or not watch_button.has_attr('href'):
-            return None
-        embed_path = watch_button['href'].replace('/watch-', '/embed-')
-        final_link = "https://sflix.to" + embed_path
-        return final_link
-    except Exception as e:
-        print(f"Error scraping sflix: {e}")
-        return None
 
-def get_fmoviesz_link(tmdb_id, media_type, season=None, episode=None):
-    """Source 5: fmoviesz.to (uses TMDB ID)"""
-    try:
-        if media_type == 'movie':
-            return f"https://fmoviesz.to/movie/{tmdb_id}"
-        elif media_type == 'tv':
-            s = season or '1'
-            e = episode or '1'
-            return f"https://fmoviesz.to/tv/{tmdb_id}-{s}-{e}"
-    except Exception as e:
-        print(f"Error getting fmoviesz link: {e}")
-    return None
+        # Step 4: Find the final streaming/download links on the page
+        # This site often has multiple links, we will try to find a common one
+        # Looking for links that contain 'stream' or 'download' in their text or URL
+        found_links = []
+        for link in movie_soup.find_all('a'):
+            link_text = link.text.lower()
+            link_href = link.get('href', '').lower()
+            if 'stream' in link_text or 'download' in link_text or 'watch' in link_text:
+                # Ensure the link is a full URL
+                full_url = urljoin(base_url, link_href)
+                found_links.append(full_url)
+        
+        # Return the first good link we find
+        return found_links[0] if found_links else None
 
-def scrape_katmoviehd(query):
-    """Source 6: katmoviehd.lat (Robust version)"""
-    try:
-        search_url = f"https://katmoviehd.lat/?s={quote_plus(query)}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        search_response = requests.get(search_url, headers=headers, timeout=10)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        first_result_container = search_soup.find('h2', class_='title')
-        if first_result_container:
-            first_result_link = first_result_container.find('a')
-            if first_result_link and first_result_link.has_attr('href'):
-                return first_result_link['href']
-        return None
     except Exception as e:
-        print(f"Error scraping KatMovieHD: {e}")
-        return None
-
-def scrape_extramovies(query):
-    """Source 7: extramovies.lat"""
-    try:
-        search_url = f"https://extramovies.lat/?s={quote_plus(query)}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        search_response = requests.get(search_url, headers=headers, timeout=10)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        content_area = search_soup.find('div', id='content_box')
-        if content_area:
-            first_result = content_area.find('a')
-            if first_result and first_result.has_attr('href'):
-                return first_result['href']
-        return None
-    except Exception as e:
-        print(f"Error scraping ExtraMovies: {e}")
+        print(f"Error scraping SkymoviesHD: {e}")
         return None
 
 # --- Main API Endpoint ---
@@ -124,29 +102,23 @@ def search():
     try:
         all_links = []
         
-        # Run direct query scrapers first
-        sflix_link = scrape_sflix(query)
-        if sflix_link: all_links.append(sflix_link)
-        
-        katmovie_link = scrape_katmoviehd(query)
-        if katmovie_link: all_links.append(katmovie_link)
+        # Run our new SkymoviesHD scraper first
+        skymovies_link = scrape_skymovieshd(query)
+        if skymovies_link:
+            all_links.append(skymovies_link)
 
-        extramovies_link = scrape_extramovies(query)
-        if extramovies_link: all_links.append(extramovies_link)
-            
         # Use TMDB to get IDs for the other scrapers
         tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
         tmdb_response = requests.get(tmdb_search_url)
         tmdb_data = tmdb_response.json()
 
-        title = query # Default title
+        title = query
         if tmdb_data.get("results"):
             first_result = tmdb_data["results"][0]
-            tmdb_id = first_result.get("id")
             media_type = first_result.get("media_type")
             title = first_result.get("name") or first_result.get("title")
             
-            details_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
+            details_url = f"https://api.themoviedb.org/3/{media_type}/{first_result.get('id')}/external_ids?api_key={TMDB_API_KEY}"
             details_response = requests.get(details_url)
             details_data = details_response.json()
             imdb_id = details_data.get("imdb_id")
@@ -154,11 +126,8 @@ def search():
             if imdb_id:
                 all_links.extend(get_vidsrc_links(imdb_id, media_type))
                 link_2embed = get_2embed_link(imdb_id, media_type)
-                if link_2embed: all_links.append(link_2embed)
-            
-            if tmdb_id:
-                fmoviesz_link = get_fmoviesz_link(tmdb_id, media_type)
-                if fmoviesz_link: all_links.append(fmoviesz_link)
+                if link_2embed:
+                    all_links.append(link_2embed)
 
         if not all_links:
             return jsonify({"error": "Could not find any streaming links from any source."}), 404
