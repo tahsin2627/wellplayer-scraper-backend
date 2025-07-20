@@ -41,7 +41,6 @@ def get_2embed_link(imdb_id, media_type, season=None, episode=None):
         print(f"Error getting 2embed link: {e}")
     return None
 
-# --- UPGRADED, MORE ADVANCED SCRAPER ---
 def scrape_skymovieshd(query):
     """Source 4: skymovieshd.land (Smarter, multi-step version)"""
     base_url = "https://skymovieshd.land/"
@@ -49,11 +48,9 @@ def scrape_skymovieshd(query):
         search_url = f"{base_url}?s={quote_plus(query)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         
-        # Step 1: Search for the movie
         search_response = requests.get(search_url, headers=headers, timeout=10)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
 
-        # Step 2: Find the link to the movie's page
         post_content = search_soup.find('div', class_='post-content')
         if not post_content:
             print("SkymoviesHD: No post-content found on search page.")
@@ -66,27 +63,58 @@ def scrape_skymovieshd(query):
         
         movie_page_url = title_link_element['href']
 
-        # Step 3: Go to the movie's page
         movie_response = requests.get(movie_page_url, headers=headers, timeout=10)
         movie_soup = BeautifulSoup(movie_response.text, 'lxml')
 
-        # Step 4: Find the final streaming/download links on the page
-        # This site often has multiple links, we will try to find a common one
-        # Looking for links that contain 'stream' or 'download' in their text or URL
         found_links = []
         for link in movie_soup.find_all('a'):
             link_text = link.text.lower()
             link_href = link.get('href', '').lower()
             if 'stream' in link_text or 'download' in link_text or 'watch' in link_text:
-                # Ensure the link is a full URL
                 full_url = urljoin(base_url, link_href)
                 found_links.append(full_url)
         
-        # Return the first good link we find
         return found_links[0] if found_links else None
 
     except Exception as e:
         print(f"Error scraping SkymoviesHD: {e}")
+        return None
+
+# --- NEW, ADVANCED SCRAPER FOR CINEFREAK ---
+def scrape_cinefreak(query):
+    """Source 5: cinefreak.net (Multi-step scraper)"""
+    base_url = "https://cinefreak.net/"
+    try:
+        search_url = f"{base_url}?s={quote_plus(query)}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        
+        # Step 1: Search for the movie
+        search_response = requests.get(search_url, headers=headers, timeout=15)
+        search_soup = BeautifulSoup(search_response.text, 'lxml')
+
+        # Step 2: Find the link to the movie's page
+        movie_link_element = search_soup.find('a', class_='post-image-container')
+        if not movie_link_element or not movie_link_element.has_attr('href'):
+            print("Cinefreak: No movie link found in search results.")
+            return None
+        
+        movie_page_url = movie_link_element['href']
+
+        # Step 3: Go to the movie's page
+        movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
+        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
+
+        # Step 4: Find the final streaming link (often in an iframe)
+        iframe = movie_soup.find('iframe')
+        if iframe and iframe.has_attr('src'):
+            final_link = urljoin(base_url, iframe['src'])
+            return final_link
+        
+        print("Cinefreak: No iframe found on movie page.")
+        return None
+
+    except Exception as e:
+        print(f"Error scraping Cinefreak: {e}")
         return None
 
 # --- Main API Endpoint ---
@@ -102,10 +130,14 @@ def search():
     try:
         all_links = []
         
-        # Run our new SkymoviesHD scraper first
+        # Run our direct scrapers first
         skymovies_link = scrape_skymovieshd(query)
         if skymovies_link:
             all_links.append(skymovies_link)
+        
+        cinefreak_link = scrape_cinefreak(query)
+        if cinefreak_link:
+            all_links.append(cinefreak_link)
 
         # Use TMDB to get IDs for the other scrapers
         tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
