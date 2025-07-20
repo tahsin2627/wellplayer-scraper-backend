@@ -90,7 +90,7 @@ def scrape_cinefreak(query):
         return None
 
 def scrape_dongobd(query):
-    """Source 6: dongobd.com"""
+    """Source 6: dongobd.com (Restored)"""
     base_url = "https://dongobd.com/"
     try:
         search_url = f"{base_url}?s={quote_plus(query)}"
@@ -109,39 +109,6 @@ def scrape_dongobd(query):
         return None
     except Exception as e:
         print(f"Error scraping Dongobd: {e}")
-        return None
-
-# --- NEW SCRAPERS ---
-def scrape_dramacool(query):
-    """Source 7: dramacool.pa"""
-    try:
-        search_url = f"https://dramacool.pa/search?type=movies&keyword={quote_plus(query)}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        search_response = requests.get(search_url, headers=headers, timeout=15)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        first_result = search_soup.find('a', class_='film-poster-ahref')
-        if not first_result or not first_result.has_attr('href'):
-            return None
-        watch_url = "https://dramacool.pa" + first_result['href']
-        return watch_url
-    except Exception as e:
-        print(f"Error scraping Dramacool: {e}")
-        return None
-
-def scrape_kissasian(query):
-    """Source 8: kissasian.li"""
-    try:
-        search_url = f"https://kissasian.li/Search/SearchSuggest"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        search_response = requests.post(search_url, data={'type': 'drama', 'keyword': query}, headers=headers, timeout=15)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        first_result = search_soup.find('a')
-        if not first_result or not first_result.has_attr('href'):
-            return None
-        watch_url = "https://kissasian.li" + first_result['href']
-        return watch_url
-    except Exception as e:
-        print(f"Error scraping Kissasian: {e}")
         return None
 
 # --- Main API Endpoint ---
@@ -166,12 +133,6 @@ def search():
 
         dongobd_link = scrape_dongobd(query)
         if dongobd_link: all_links.append(dongobd_link)
-        
-        dramacool_link = scrape_dramacool(query)
-        if dramacool_link: all_links.append(dramacool_link)
-            
-        kissasian_link = scrape_kissasian(query)
-        if kissasian_link: all_links.append(kissasian_link)
 
         # Use TMDB to get IDs for the other scrapers
         tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
