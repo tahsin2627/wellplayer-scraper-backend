@@ -1,4 +1,3 @@
-ort=port)
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -16,47 +15,85 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 def get_vidsrc_links(imdb_id, media_type, season=None, episode=None):
     """Source 1 & 2: vidsrc.to and vidsrc.me"""
     links = []
-    # ... (This function is already stable and remains unchanged) ...
+    try:
+        if media_type == 'movie':
+            links.append(f"https://vidsrc.to/embed/movie/{imdb_id}")
+            links.append(f"https://vidsrc.me/embed/movie?imdb={imdb_id}")
+        elif media_type == 'tv':
+            s = season or '1'
+            e = episode or '1'
+            links.append(f"https://vidsrc.to/embed/tv/{imdb_id}/{s}-{e}")
+            links.append(f"https://vidsrc.me/embed/tv?imdb={imdb_id}&season={s}&episode={e}")
+    except Exception as e:
+        print(f"Error getting vidsrc links: {e}")
     return links
 
 def get_2embed_link(imdb_id, media_type, season=None, episode=None):
     """Source 3: 2embed.cc"""
-    # ... (This function is already stable and remains unchanged) ...
+    try:
+        if media_type == 'movie':
+            return f"https://2embed.cc/embed/{imdb_id}"
+        elif media_type == 'tv':
+            s = season or '1'
+            e = episode or '1'
+            return f"https://2embed.cc/embed/tv?imdb={imdb_id}&s={s}&e={e}"
+    except Exception as e:
+        print(f"Error getting 2embed link: {e}")
     return None
 
 def scrape_sflix(query):
     """Source 4: sflix.to"""
-    # ... (This function is already stable and remains unchanged) ...
-    return None
+    try:
+        search_url = f"https://sflix.to/search/{query.replace(' ', '-')}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        search_response = requests.get(search_url, headers=headers, timeout=10)
+        search_soup = BeautifulSoup(search_response.text, 'lxml')
+        first_result = search_soup.find('a', class_='flw-item-tip')
+        if not first_result or not first_result.has_attr('href'):
+            return None
+        movie_page_url = "https://sflix.to" + first_result['href']
+        movie_response = requests.get(movie_page_url, headers=headers, timeout=10)
+        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
+        watch_button = movie_soup.find('a', class_='btn-play')
+        if not watch_button or not watch_button.has_attr('href'):
+            return None
+        embed_path = watch_button['href'].replace('/watch-', '/embed-')
+        final_link = "https://sflix.to" + embed_path
+        return final_link
+    except Exception as e:
+        print(f"Error scraping sflix: {e}")
+        return None
 
 def get_fmoviesz_link(tmdb_id, media_type, season=None, episode=None):
-    """Source 5: fmoviesz.to"""
-    # ... (This function is already stable and remains unchanged) ...
+    """Source 5: fmoviesz.to (uses TMDB ID)"""
+    try:
+        if media_type == 'movie':
+            return f"https://fmoviesz.to/movie/{tmdb_id}"
+        elif media_type == 'tv':
+            s = season or '1'
+            e = episode or '1'
+            return f"https://fmoviesz.to/tv/{tmdb_id}-{s}-{e}"
+    except Exception as e:
+        print(f"Error getting fmoviesz link: {e}")
     return None
 
-# --- UPGRADED ROBUST SCRAPER ---
 def scrape_katmoviehd(query):
-    """Source 6: katmoviehd.lat (Now more robust)"""
+    """Source 6: katmoviehd.lat (Robust version)"""
     try:
         search_url = f"https://katmoviehd.lat/?s={quote_plus(query)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         search_response = requests.get(search_url, headers=headers, timeout=10)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
-
-        # Find the container for the first search result
         first_result_container = search_soup.find('h2', class_='title')
-        # This is the key fix: Check if the container was found before trying to find the link
         if first_result_container:
             first_result_link = first_result_container.find('a')
             if first_result_link and first_result_link.has_attr('href'):
                 return first_result_link['href']
-        
-        return None # Return None if anything is not found, preventing crashes
+        return None
     except Exception as e:
         print(f"Error scraping KatMovieHD: {e}")
         return None
 
-# --- NEW RELIABLE SCRAPER ---
 def scrape_extramovies(query):
     """Source 7: extramovies.lat"""
     try:
@@ -64,20 +101,15 @@ def scrape_extramovies(query):
         headers = {'User-Agent': 'Mozilla/5.0'}
         search_response = requests.get(search_url, headers=headers, timeout=10)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
-        
-        # Find the first result link in the main content area
         content_area = search_soup.find('div', id='content_box')
         if content_area:
             first_result = content_area.find('a')
             if first_result and first_result.has_attr('href'):
-                # This site often provides direct embed links in search results
                 return first_result['href']
-
         return None
     except Exception as e:
         print(f"Error scraping ExtraMovies: {e}")
         return None
-
 
 # --- Main API Endpoint ---
 @app.route('/search')
@@ -92,18 +124,16 @@ def search():
     try:
         all_links = []
         
-        # --- Run all scrapers ---
+        # Run direct query scrapers first
+        sflix_link = scrape_sflix(query)
+        if sflix_link: all_links.append(sflix_link)
         
-        # Run the new, more direct scrapers first
         katmovie_link = scrape_katmoviehd(query)
         if katmovie_link: all_links.append(katmovie_link)
 
         extramovies_link = scrape_extramovies(query)
         if extramovies_link: all_links.append(extramovies_link)
             
-        sflix_link = scrape_sflix(query)
-        if sflix_link: all_links.append(sflix_link)
-
         # Use TMDB to get IDs for the other scrapers
         tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
         tmdb_response = requests.get(tmdb_search_url)
