@@ -4,4 +4,3 @@ gunicorn
 requests
 beautifulsoup4
 1xml
-selenium
