@@ -49,62 +49,71 @@ def get_2embed_link(imdb_id, media_type, season=None, episode=None):
         print(f"Error getting 2embed link: {e}")
     return None
 
-# --- UPGRADED, POWERFUL SCRAPERS ---
+# --- UPGRADED, LANGUAGE-AWARE SCRAPERS ---
 
-def scrape_skymovieshd(query):
-    """Source 4: skymovieshd.land (Upgraded multi-step scraper)"""
-    base_url = "https://skymovieshd.land/"
+def scrape_sflix(query):
+    """Source 4: sflix.to (Upgraded language-aware scraper)"""
     try:
-        search_soup = get_soup(f"{base_url}?s={quote_plus(query)}")
-        post_content = search_soup.find('div', class_='post-content')
-        if not post_content: return None
-        title_link_element = post_content.find('a')
-        if not title_link_element or not title_link_element.has_attr('href'): return None
+        search_soup = get_soup(f"https://sflix.to/search/{query.replace(' ', '-')}")
+        # Find all results, not just the first one
+        results = search_soup.find_all('a', class_='flw-item-tip')
+        if not results: return None
+
+        # Intelligently find the best match based on the query
+        best_match_url = None
+        query_lower = query.lower()
+        for result in results:
+            title = result.get('title', '').lower()
+            if query_lower in title:
+                best_match_url = "https://sflix.to" + result['href']
+                # If the query contains language hints, prioritize that result
+                if 'hindi' in query_lower and 'hindi' in title:
+                    break # Found a perfect match
+                if 'dubbed' in query_lower and 'dubbed' in title:
+                    break # Found a perfect match
         
-        movie_page_soup = get_soup(title_link_element['href'])
-        
-        for link in movie_page_soup.find_all('a'):
-             link_href = link.get('href', '')
-             if link_href and 'gplinks' in link_href: # A common pattern on this site
-                 return link_href
-        return None
+        if not best_match_url:
+            return None # No good match found
+
+        movie_page_soup = get_soup(best_match_url)
+        watch_button = movie_page_soup.find('a', class_='btn-play')
+        if not watch_button or not watch_button.has_attr('href'): return None
+            
+        embed_path = watch_button['href'].replace('/watch-', '/embed-')
+        return "https://sflix.to" + embed_path
     except Exception as e:
-        print(f"Error scraping SkymoviesHD: {e}")
+        print(f"Error scraping sflix: {e}")
         return None
 
-def scrape_cinefreak(query):
-    """Source 5: cinefreak.net (Upgraded multi-step scraper)"""
-    base_url = "https://cinefreak.net/"
+
+def scrape_katmoviehd(query):
+    """Source 5: katmoviehd.lat (Upgraded language-aware scraper)"""
     try:
-        search_soup = get_soup(f"{base_url}?s={quote_plus(query)}")
-        movie_link_element = search_soup.find('a', class_='post-image-container')
-        if not movie_link_element or not movie_link_element.has_attr('href'): return None
+        search_soup = get_soup(f"https://katmoviehd.lat/?s={quote_plus(query)}")
+        # Find all results
+        results = search_soup.find_all('h2', class_='title')
+        if not results: return None
+
+        best_match_url = None
+        query_lower = query.lower()
+        for result in results:
+            link_element = result.find('a')
+            if link_element:
+                title = link_element.text.lower()
+                if query_lower in title:
+                    best_match_url = link_element['href']
+                    if 'hindi' in query_lower and 'hindi' in title:
+                        break
         
-        movie_page_soup = get_soup(movie_link_element['href'])
-        iframe = movie_page_soup.find('iframe')
-        if iframe and iframe.has_attr('src'):
-            return urljoin(base_url, iframe['src'])
-        return None
+        if not best_match_url:
+            return None
+
+        # On this site, the search result link is often the final page
+        return best_match_url
     except Exception as e:
-        print(f"Error scraping Cinefreak: {e}")
+        print(f"Error scraping KatMovieHD: {e}")
         return None
 
-def scrape_dongobd(query):
-    """Source 6: dongobd.com (Upgraded multi-step scraper)"""
-    base_url = "https://dongobd.com/"
-    try:
-        search_soup = get_soup(f"{base_url}?s={quote_plus(query)}")
-        movie_link_element = search_soup.find('a', class_='lnk-blk')
-        if not movie_link_element or not movie_link_element.has_attr('href'): return None
-
-        movie_page_soup = get_soup(movie_link_element['href'])
-        iframe = movie_page_soup.find('iframe')
-        if iframe and iframe.has_attr('src'):
-            return urljoin(base_url, iframe['src'])
-        return None
-    except Exception as e:
-        print(f"Error scraping Dongobd: {e}")
-        return None
 
 # --- Main API Endpoint ---
 @app.route('/search')
@@ -120,17 +129,16 @@ def search():
         all_links = []
         
         # Run our powerful direct scrapers first
-        skymovies_link = scrape_skymovieshd(query)
-        if skymovies_link: all_links.append(skymovies_link)
+        sflix_link = scrape_sflix(query)
+        if sflix_link: all_links.append(sflix_link)
         
-        cinefreak_link = scrape_cinefreak(query)
-        if cinefreak_link: all_links.append(cinefreak_link)
-
-        dongobd_link = scrape_dongobd(query)
-        if dongobd_link: all_links.append(dongobd_link)
+        katmovie_link = scrape_katmoviehd(query)
+        if katmovie_link: all_links.append(katmovie_link)
 
         # Use TMDB to get IDs for the other, simpler scrapers
-        tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
+        # We use a cleaned-up query for TMDB to get a more reliable ID
+        cleaned_query = query.lower().replace('hindi', '').replace('dubbed', '').strip()
+        tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={cleaned_query}"
         tmdb_response = requests.get(tmdb_search_url)
         tmdb_data = tmdb_response.json()
 
