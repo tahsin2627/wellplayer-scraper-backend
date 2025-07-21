@@ -116,29 +116,35 @@ def scrape_cimawbas(query):
     """Source 7: cimawbas.tv"""
     base_url = "https://cimawbas.tv/"
     try:
+        # Step 1: Search for the movie/series
         search_url = f"{base_url}search/{quote_plus(query)}/"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         
         search_response = requests.get(search_url, headers=headers, timeout=15)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
 
+        # Step 2: Find the link to the movie's page
         thumb_div = search_soup.find('div', class_='Thumb')
         if not thumb_div: return None
         
         movie_link_element = thumb_div.find('a')
         if not movie_link_element or not movie_link_element.has_attr('href'): return None
         
+        # Step 3: Go to the movie's page
         movie_page_url = movie_link_element['href']
         movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
         movie_soup = BeautifulSoup(movie_response.text, 'lxml')
 
+        # Step 4: Find the "watch" button link
         watch_button = movie_soup.find('a', class_='watch-btn')
         if not watch_button or not watch_button.has_attr('href'): return None
 
+        # Step 5: Go to the watch page
         watch_page_url = watch_button['href']
         watch_response = requests.get(watch_page_url, headers=headers, timeout=15)
         watch_soup = BeautifulSoup(watch_response.text, 'lxml')
         
+        # Step 6: Find the final iframe source URL
         iframe = watch_soup.find('iframe')
         if iframe and iframe.has_attr('src'):
             return iframe['src']
