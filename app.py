@@ -56,37 +56,18 @@ def scrape_skymovieshd(query):
     base_url = "https://skymovieshd.land/"
     try:
         search_soup = get_soup(f"{base_url}?s={quote_plus(query)}")
-        # Find all results to intelligently match the query
-        results = search_soup.find_all('div', class_='post-content')
-        if not results: return None
-
-        best_match_url = None
-        query_lower = query.lower()
-        for result in results:
-            link_element = result.find('a')
-            if link_element and link_element.has_attr('href'):
-                title = link_element.text.lower()
-                # Prioritize results that contain the full query
-                if all(word in title for word in query_lower.split()):
-                    best_match_url = link_element['href']
-                    break # Found a good match
+        post_content = search_soup.find('div', class_='post-content')
+        if not post_content: return None
+        title_link_element = post_content.find('a')
+        if not title_link_element or not title_link_element.has_attr('href'): return None
         
-        if not best_match_url:
-             # Fallback to the first result if no perfect match is found
-             first_link = results[0].find('a')
-             if first_link and first_link.has_attr('href'):
-                 best_match_url = first_link['href']
-             else:
-                 return None
-
-        movie_page_soup = get_soup(best_match_url)
+        movie_page_soup = get_soup(title_link_element['href'])
         
         # Find a link that is likely a player embed page
-        for link in movie_page_soup.find_all('a'):
-             link_href = link.get('href', '')
-             # Look for common video hosting domains
-             if any(domain in link_href for domain in ['gplinks', 'stream', 'dood']):
-                 return link_href
+        for link in movie_page_soup.find_all('a', class_='dl-button'):
+             if link and link.has_attr('href'):
+                 # This site often uses intermediate pages, we take the first good one
+                 return link['href']
         return None
     except Exception as e:
         print(f"Error scraping SkymoviesHD: {e}")
