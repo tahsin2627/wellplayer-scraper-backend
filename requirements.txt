@@ -3,4 +3,4 @@ Flask-Cors
 gunicorn
 requests
 beautifulsoup4
-1xml
+lxml
