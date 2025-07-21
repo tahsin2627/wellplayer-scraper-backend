@@ -89,23 +89,37 @@ def scrape_cinefreak(query):
         print(f"Error scraping Cinefreak: {e}")
         return None
 
+# --- UPGRADED DONGOBD SCRAPER ---
 def scrape_dongobd(query):
-    """Source 6: dongobd.com (Restored)"""
+    """Source 6: dongobd.com (Upgraded for resilience)"""
     base_url = "https://dongobd.com/"
     try:
         search_url = f"{base_url}?s={quote_plus(query)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        
         search_response = requests.get(search_url, headers=headers, timeout=15)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
-        movie_link_element = search_soup.find('a', class_='lnk-blk')
-        if not movie_link_element or not movie_link_element.has_attr('href'):
+
+        # Find the first result link, which is inside an h2 tag
+        first_result_header = search_soup.find('h2', class_='entry-title')
+        if not first_result_header:
+            print("Dongobd: No entry-title found.")
             return None
+            
+        movie_link_element = first_result_header.find('a')
+        if not movie_link_element or not movie_link_element.has_attr('href'):
+            print("Dongobd: No link found in entry-title.")
+            return None
+        
         movie_page_url = movie_link_element['href']
         movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
         movie_soup = BeautifulSoup(movie_response.text, 'lxml')
+
+        # Find the iframe on the movie page
         iframe = movie_soup.find('iframe')
         if iframe and iframe.has_attr('src'):
             return urljoin(base_url, iframe['src'])
+        
         return None
     except Exception as e:
         print(f"Error scraping Dongobd: {e}")
