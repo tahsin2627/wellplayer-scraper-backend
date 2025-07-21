@@ -63,11 +63,10 @@ def scrape_skymovieshd(query):
         
         movie_page_soup = get_soup(title_link_element['href'])
         
-        # Find a link that is likely a player embed page
-        for link in movie_page_soup.find_all('a', class_='dl-button'):
-             if link and link.has_attr('href'):
-                 # This site often uses intermediate pages, we take the first good one
-                 return link['href']
+        for link in movie_page_soup.find_all('a'):
+             link_href = link.get('href', '')
+             if link_href and 'gplinks' in link_href: # A common pattern on this site
+                 return link_href
         return None
     except Exception as e:
         print(f"Error scraping SkymoviesHD: {e}")
