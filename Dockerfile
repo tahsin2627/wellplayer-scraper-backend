@@ -1,5 +1,5 @@
-# Use an official lightweight Python image that includes build tools
-FROM python:3.9-slim-buster
+# Use a modern, supported version of the Python base image
+FROM python:3.9-slim-bookworm
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -13,8 +13,14 @@ RUN apt-get update && apt-get install -y wget unzip gnupg \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ChromeDriver automatically using a helper script
-RUN apt-get install -y chromium-driver
+# Install ChromeDriver
+# This method finds the correct version of chromedriver for the installed chrome
+RUN CHROME_MAJOR_VERSION=$(google-chrome --version | sed -E 's/.* ([0-9]+)\..*/\1/') \
+    && CHROME_DRIVER_VERSION_URL="https://googlechromelabs.github.io/chrome-for-testing/latest-patch-versions-per-build.json" \
+    && CHROME_DRIVER_VERSION=$(wget -q -O - "${CHROME_DRIVER_VERSION_URL}" | grep -oE "\"${CHROME_MAJOR_VERSION}\.[^\"]+\": {\"version\": \"([^\"]+)\"" | head -1 | sed -E 's/.*"version": "([^"]+)".*/\1/') \
+    && wget -q --continue -P /tmp/ "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_DRIVER_VERSION}/linux64/chromedriver-linux64.zip" \
+    && unzip /tmp/chromedriver-linux64.zip -d /usr/local/bin/ \
+    && rm /tmp/chromedriver-linux64.zip
 
 # Copy and install Python requirements
 COPY requirements.txt .
