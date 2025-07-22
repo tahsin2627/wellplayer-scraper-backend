@@ -4,71 +4,108 @@ from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from urllib.parse import quote_plus, urljoin
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
 
 app = Flask(__name__)
 CORS(app)
 
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 
-# --- Selenium WebDriver Setup ---
-def get_driver():
-    """Configures and returns a Selenium Chrome WebDriver."""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    # This user agent helps to avoid being detected as a bot
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
-    return webdriver.Chrome(options=chrome_options)
+# --- Helper function for making requests ---
+def get_soup(url):
+    """A helper function to get a BeautifulSoup object from a URL, handling errors."""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    response = requests.get(url, headers=headers, timeout=15)
+    response.raise_for_status()  # Will raise an error for bad responses (4xx or 5xx)
+    return BeautifulSoup(response.text, 'lxml')
 
-# --- "God-Level" Scraper for Cinefreak using Selenium ---
-def scrape_cinefreak_selenium(query):
-    """Source 1: cinefreak.net (Using Selenium to bypass security)"""
-    driver = get_driver()
-    try:
-        base_url = "https://cinefreak.net/"
-        search_url = f"{base_url}?s={quote_plus(query)}"
-        driver.get(search_url)
+# --- Scraper Functions for Each Source ---
 
-        # Wait for the search results to load and find the first link
-        wait = WebDriverWait(driver, 20) # Increased timeout for reliability
-        movie_link_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.post-image-container")))
-        movie_page_url = movie_link_element.get_attribute('href')
-
-        if not movie_page_url:
-            return None
-
-        # Go to the movie's page
-        driver.get(movie_page_url)
-        
-        # Find the iframe with the video player
-        iframe = wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
-        iframe_src = iframe.get_attribute('src')
-        
-        return urljoin(base_url, iframe_src)
-
-    except Exception as e:
-        print(f"Error scraping Cinefreak with Selenium: {e}")
-        return None
-    finally:
-        driver.quit()
-
-# --- Your other simple scrapers remain here ---
-def get_vidsrc_links(imdb_id, media_type):
+def get_vidsrc_links(imdb_id, media_type, season=None, episode=None):
+    """Source 1 & 2: vidsrc.to and vidsrc.me (Stable)"""
     links = []
-    if media_type == 'movie':
-        links.append(f"https://vidsrc.to/embed/movie/{imdb_id}")
-    elif media_type == 'tv':
-        links.append(f"https://vidsrc.to/embed/tv/{imdb_id}/1-1")
+    try:
+        if media_type == 'movie':
+            links.append(f"https://vidsrc.to/embed/movie/{imdb_id}")
+            links.append(f"https://vidsrc.me/embed/movie?imdb={imdb_id}")
+        elif media_type == 'tv':
+            s = season or '1'
+            e = episode or '1'
+            links.append(f"https://vidsrc.to/embed/tv/{imdb_id}/{s}-{e}")
+            links.append(f"https://vidsrc.me/embed/tv?imdb={imdb_id}&season={s}&episode={e}")
+    except Exception as e:
+        print(f"Error getting vidsrc links: {e}")
     return links
 
+def get_2embed_link(imdb_id, media_type, season=None, episode=None):
+    """Source 3: 2embed.cc (Stable)"""
+    try:
+        if media_type == 'movie':
+            return f"https://2embed.cc/embed/{imdb_id}"
+        elif media_type == 'tv':
+            s = season or '1'
+            e = episode or '1'
+            return f"https://2embed.cc/embed/tv?imdb={imdb_id}&s={s}&e={e}"
+    except Exception as e:
+        print(f"Error getting 2embed link: {e}")
+    return None
+
+# --- UPGRADED, POWERFUL SCRAPERS ---
+
+def scrape_skymovieshd(query):
+    """Source 4: skymovieshd.land (Upgraded multi-step scraper)"""
+    base_url = "https://skymovieshd.land/"
+    try:
+        search_soup = get_soup(f"{base_url}?s={quote_plus(query)}")
+        post_content = search_soup.find('div', class_='post-content')
+        if not post_content: return None
+        title_link_element = post_content.find('a')
+        if not title_link_element or not title_link_element.has_attr('href'): return None
+        
+        movie_page_soup = get_soup(title_link_element['href'])
+        
+        # Find a link that is likely a player embed page
+        for link in movie_page_soup.find_all('a', class_='dl-button'):
+             if link and link.has_attr('href'):
+                 # This site often uses intermediate pages, we take the first good one
+                 return link['href']
+        return None
+    except Exception as e:
+        print(f"Error scraping SkymoviesHD: {e}")
+        return None
+
+def scrape_cinefreak(query):
+    """Source 5: cinefreak.net (Upgraded multi-step scraper)"""
+    base_url = "https://cinefreak.net/"
+    try:
+        search_soup = get_soup(f"{base_url}?s={quote_plus(query)}")
+        movie_link_element = search_soup.find('a', class_='post-image-container')
+        if not movie_link_element or not movie_link_element.has_attr('href'): return None
+        
+        movie_page_soup = get_soup(movie_link_element['href'])
+        iframe = movie_page_soup.find('iframe')
+        if iframe and iframe.has_attr('src'):
+            return urljoin(base_url, iframe['src'])
+        return None
+    except Exception as e:
+        print(f"Error scraping Cinefreak: {e}")
+        return None
+
+def scrape_dongobd(query):
+    """Source 6: dongobd.com (Upgraded multi-step scraper)"""
+    base_url = "https://dongobd.com/"
+    try:
+        search_soup = get_soup(f"{base_url}?s={quote_plus(query)}")
+        movie_link_element = search_soup.find('a', class_='lnk-blk')
+        if not movie_link_element or not movie_link_element.has_attr('href'): return None
+
+        movie_page_soup = get_soup(movie_link_element['href'])
+        iframe = movie_page_soup.find('iframe')
+        if iframe and iframe.has_attr('src'):
+            return urljoin(base_url, iframe['src'])
+        return None
+    except Exception as e:
+        print(f"Error scraping Dongobd: {e}")
+        return None
 
 # --- Main API Endpoint ---
 @app.route('/search')
@@ -83,13 +120,20 @@ def search():
     try:
         all_links = []
         
-        # Run our new powerful scraper first
-        cinefreak_link = scrape_cinefreak_selenium(query)
-        if cinefreak_link:
-            all_links.append(cinefreak_link)
+        # Run our powerful direct scrapers first
+        skymovies_link = scrape_skymovieshd(query)
+        if skymovies_link: all_links.append(skymovies_link)
+        
+        cinefreak_link = scrape_cinefreak(query)
+        if cinefreak_link: all_links.append(cinefreak_link)
+
+        dongobd_link = scrape_dongobd(query)
+        if dongobd_link: all_links.append(dongobd_link)
 
         # Use TMDB to get IDs for the other, simpler scrapers
-        tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
+        # We use a cleaned-up query for TMDB to get a more reliable ID
+        cleaned_query = query.lower().replace('hindi', '').replace('dubbed', '').strip()
+        tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={cleaned_query}"
         tmdb_response = requests.get(tmdb_search_url)
         tmdb_data = tmdb_response.json()
 
@@ -106,11 +150,14 @@ def search():
 
             if imdb_id:
                 all_links.extend(get_vidsrc_links(imdb_id, media_type))
+                link_2embed = get_2embed_link(imdb_id, media_type)
+                if link_2embed: all_links.append(link_2embed)
 
         if not all_links:
-            return jsonify({"error": "Could not find any streaming links."}), 404
+            return jsonify({"error": "Could not find any streaming links from any source."}), 404
             
-        return jsonify({ "title": title, "links": list(set(all_links)) })
+        unique_links = list(set(all_links))
+        return jsonify({ "title": title, "links": unique_links })
         
     except Exception as e:
         print(f"An error occurred in /search: {e}")
