@@ -1,10 +1,11 @@
-# Use an official lightweight Python image
-FROM python:3.9-slim
+# Use an official lightweight Python image that includes build tools
+FROM python:3.9-slim-buster
 
 # Set the working directory inside the container
 WORKDIR /app
 
 # Install system dependencies, including wget and unzip, then install Google Chrome
+# This is a more modern and reliable method
 RUN apt-get update && apt-get install -y wget unzip gnupg \
     && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-archive-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-archive-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
@@ -12,12 +13,8 @@ RUN apt-get update && apt-get install -y wget unzip gnupg \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ChromeDriver
-RUN CHROME_MAJOR_VERSION=$(google-chrome --version | sed -E 's/.* ([0-9]+)\..*/\1/') \
-    && CHROME_DRIVER_VERSION=$(wget -q -O - "https://googlechromelabs.github.io/chrome-for-testing/latest-patch-versions-per-build.json" | grep -oE "\"${CHROME_MAJOR_VERSION}\.[^\"]+\": {\"version\": \"([^\"]+)\"" | head -1 | sed -E 's/.*"version": "([^"]+)".*/\1/') \
-    && wget -q --continue -P /tmp/ https://storage.googleapis.com/chrome-for-testing-public/${CHROME_DRIVER_VERSION}/linux64/chromedriver-linux64.zip \
-    && unzip /tmp/chromedriver-linux64.zip -d /usr/local/bin/ \
-    && rm /tmp/chromedriver-linux64.zip
+# Install ChromeDriver automatically using a helper script
+RUN apt-get install -y chromium-driver
 
 # Copy and install Python requirements
 COPY requirements.txt .
