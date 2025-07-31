@@ -47,82 +47,87 @@ def parse_query_for_language(query):
 
 # --- Link Provider & Scraper Functions ---
 def get_vidsrc_links(imdb_id, media_type, season=None, episode=None):
-    """Source 1 & 2: vidsrc.to and vidsrc.me (Original Language)"""
+    """Source: vidsrc.to and vidsrc.me"""
     links = []
     try:
         if media_type == 'movie':
             links.append({"url": f"https://vidsrc.to/embed/movie/{imdb_id}", "source": "VidSrc.to", "lang": "Original"})
-            links.append({"url": f"https://vidsrc.me/embed/movie?imdb={imdb_id}", "source": "VidSrc.me", "lang": "Original"})
         elif media_type == 'tv':
-            s = season or '1'
-            e = episode or '1'
+            s, e = season or '1', episode or '1'
             links.append({"url": f"https://vidsrc.to/embed/tv/{imdb_id}/{s}-{e}", "source": "VidSrc.to", "lang": "Original"})
-            links.append({"url": f"https://vidsrc.me/embed/tv?imdb={imdb_id}&season={s}&episode={e}", "source": "VidSrc.me", "lang": "Original"})
     except Exception as e:
         print(f"Error getting vidsrc links: {e}")
     return links
 
-def get_2embed_link(imdb_id, media_type, season=None, episode=None):
-    """Source 3: 2embed.cc (Original Language)"""
-    links = []
-    try:
-        url = None
-        if media_type == 'movie':
-            url = f"https://2embed.cc/embed/{imdb_id}"
-        elif media_type == 'tv':
-            s = season or '1'
-            e = episode or '1'
-            url = f"https://2embed.cc/embed/tv?imdb={imdb_id}&s={s}&e={e}"
-        if url:
-            links.append({"url": url, "source": "2Embed", "lang": "Original"})
-    except Exception as e:
-        print(f"Error getting 2embed link: {e}")
-    return links
-
-def scrape_vidsrc_pro(tmdb_id, media_type, season=None, episode=None):
-    """Advanced scraper for sources like VidSrc.Pro."""
+## --- NEW SCRAPER: StreamBlasters --- ##
+def scrape_streamblasters(tmdb_id, media_type, season=None, episode=None):
+    """Advanced scraper for streamblasters.city, similar to vidsrc.pro."""
     found_links = []
     try:
-        base_url = "https://vidsrc.pro/embed"
+        base_url = "https://www.streamblasters.city"
         if media_type == 'movie':
-            embed_url = f"{base_url}/movie/{tmdb_id}"
-        elif media_type == 'tv':
-            embed_url = f"{base_url}/tv/{tmdb_id}/{season}-{episode}"
+            embed_url = f"{base_url}/embed/movie/{tmdb_id}"
         else:
-            return []
-
-        response = requests.get(embed_url, headers=HEADERS)
-        if response.status_code != 200: return []
+            embed_url = f"{base_url}/embed/tv/{tmdb_id}?s={season}&e={episode}"
         
+        response = requests.get(embed_url, headers=HEADERS, timeout=10)
+        if response.status_code != 200: return []
+
         soup = BeautifulSoup(response.text, 'lxml')
-        server_tabs = soup.find_all('div', class_='server')
-        for tab in server_tabs:
-            server_name = tab.text.strip()
-            data_hash = tab.get('data-hash')
-            if not data_hash: continue
-
-            api_url = f"https://vidsrc.pro/rcp/{data_hash}"
-            api_headers = HEADERS.copy()
-            api_headers['Referer'] = embed_url
-            
-            source_response = requests.get(api_url, headers=api_headers)
-            if source_response.status_code != 200: continue
-            
-            source_data = source_response.json()
-            iframe_url = source_data.get('result', {}).get('url')
-
-            if iframe_url:
-                final_url = urljoin("https:", iframe_url)
+        server_links = soup.select('ul.servers > li')
+        for link in server_links:
+            server_name = link.text.strip()
+            iframe_src = link.get('data-embed')
+            if iframe_src:
                 lang = "Dubbed" if "dub" in server_name.lower() or "hindi" in server_name.lower() else "Original"
-                found_links.append({"url": final_url, "source": server_name, "lang": lang})
+                found_links.append({"url": iframe_src, "source": f"StreamBlasters - {server_name}", "lang": lang})
     except Exception as e:
-        print(f"Error in scrape_vidsrc_pro: {e}")
+        print(f"Error in scrape_streamblasters: {e}")
+    return found_links
+
+## --- NEW SCRAPER: HDHub4u --- ##
+def scrape_hdhub4u(query):
+    """Text-based scraper for hdhub4u.build."""
+    found_links = []
+    try:
+        base_url = "https://hdhub4u.build/"
+        search_url = f"{base_url}?s={quote_plus(query)}"
+        
+        search_response = requests.get(search_url, headers=HEADERS, timeout=15)
+        if search_response.status_code != 200: return []
+        
+        search_soup = BeautifulSoup(search_response.text, 'lxml')
+        first_result = search_soup.select_one('article.post .entry-title a')
+        if not first_result: return []
+
+        movie_page_url = first_result['href']
+        post_title = first_result.text.lower()
+        
+        movie_page_response = requests.get(movie_page_url, headers=HEADERS, timeout=15)
+        movie_soup = BeautifulSoup(movie_page_response.text, 'lxml')
+        
+        # Find the "Watch Online" link which leads to the actual streaming page
+        watch_online_link = movie_soup.find('a', class_=["aio-red", "dl-button"], string=re.compile(r'Watch Online', re.IGNORECASE))
+        if not watch_online_link: return []
+
+        stream_page_url = watch_online_link['href']
+        stream_page_response = requests.get(stream_page_url, headers=HEADERS, timeout=15)
+        stream_soup = BeautifulSoup(stream_page_response.text, 'lxml')
+        
+        # On the final page, find the iframe
+        iframe = stream_soup.find('iframe')
+        if iframe and iframe.has_attr('src'):
+            lang = "Hindi" if "hindi" in post_title or "dubbed" in post_title else "Original"
+            found_links.append({"url": iframe['src'], "source": "HDHub4u", "lang": lang})
+
+    except Exception as e:
+        print(f"Error scraping HDHub4u: {e}")
     return found_links
 
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend v7 (Robust) is running!"
+    return "WellPlayer Scraper Backend v8 (Multi-Source) is running!"
 
 @app.route('/search')
 def search():
@@ -156,6 +161,7 @@ def search():
 @app.route('/movie/<int:tmdb_id>')
 def get_movie_details(tmdb_id):
     """Step 2 (Movies): Gets links from ALL available sources."""
+    original_query = request.args.get('query')
     all_links = []
     
     # Get IMDb ID for the simple scrapers
@@ -164,12 +170,14 @@ def get_movie_details(tmdb_id):
     imdb_id = ids_data.get("imdb_id") if ids_data else None
 
     # --- Run all sources ---
+    # 1. ID-based scrapers (fast and reliable)
     if imdb_id:
         all_links.extend(get_vidsrc_links(imdb_id, 'movie'))
-        all_links.extend(get_2embed_link(imdb_id, 'movie'))
+    all_links.extend(scrape_streamblasters(tmdb_id, 'movie'))
     
-    # Also run the advanced scraper
-    all_links.extend(scrape_vidsrc_pro(tmdb_id, 'movie'))
+    # 2. Text-based scrapers (good for dubbed/regional)
+    if original_query:
+        all_links.extend(scrape_hdhub4u(original_query))
 
     if not all_links:
         return jsonify({"error": "No streaming links found for this movie."}), 404
@@ -202,12 +210,10 @@ def get_episodes():
     if not tmdb_id or not season_num:
         return jsonify({"error": "tmdb_id and season are required."}), 400
 
-    # Get IMDb ID for simple scrapers
     external_ids_url = f"{TMDB_API_BASE}/tv/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
     ids_data = get_tmdb_data(external_ids_url)
     imdb_id = ids_data.get("imdb_id") if ids_data else None
 
-    # Get episode list from TMDB
     season_details_url = f"{TMDB_API_BASE}/tv/{tmdb_id}/season/{season_num}?api_key={TMDB_API_KEY}"
     season_data = get_tmdb_data(season_details_url)
     if not season_data or not season_data.get('episodes'):
@@ -218,17 +224,15 @@ def get_episodes():
         ep_num = episode.get('episode_number')
         all_links_for_ep = []
 
-        # Get links from all sources for this specific episode
         if imdb_id:
             all_links_for_ep.extend(get_vidsrc_links(imdb_id, 'tv', season_num, ep_num))
-            all_links_for_ep.extend(get_2embed_link(imdb_id, 'tv', season_num, ep_num))
         
-        all_links_for_ep.extend(scrape_vidsrc_pro(tmdb_id, 'tv', season_num, ep_num))
+        all_links_for_ep.extend(scrape_streamblasters(tmdb_id, 'tv', season_num, ep_num))
         
         episode_links_list.append({
             "episode": ep_num,
             "title": episode.get('name', f"Episode {ep_num}"),
-            "links": list({link['url']: link for link in all_links_for_ep}.values()) # De-duplicate
+            "links": list({link['url']: link for link in all_links_for_ep}.values())
         })
 
     return jsonify({"season": season_num, "episodes": episode_links_list})
