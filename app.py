@@ -38,7 +38,7 @@ def parse_query_for_language(query):
     base_query = " ".join(base_query_parts)
     return base_query if base_query else query, query
 
-# --- Scraper Functions ---
+# --- Link Provider & Scraper Functions ---
 
 ## --- PRIMARY ROBUST SCRAPER --- ##
 def scrape_vidsrc_to_sources(tmdb_id, media_type, season=None, episode=None):
@@ -74,9 +74,9 @@ def scrape_vidsrc_to_sources(tmdb_id, media_type, season=None, episode=None):
         print(f"Error scraping VidSrc.to sources: {e}")
     return found_links
 
-## --- SECONDARY SCRAPERS --- ##
-
+# --- Existing Secondary Scrapers ---
 def scrape_hdhub4u(query):
+    # This function remains unchanged
     found_links = []
     try:
         base_url = "https://hdhub4u.build/"
@@ -104,6 +104,7 @@ def scrape_hdhub4u(query):
     return found_links
 
 def scrape_cinefreak(query):
+    # This function remains unchanged
     found_links = []
     try:
         base_url = "https://cinefreak.net/"
@@ -123,6 +124,8 @@ def scrape_cinefreak(query):
     except Exception as e:
         print(f"Error scraping Cinefreak: {e}")
     return found_links
+    
+# --- NEW SCRAPERS ---
 
 def scrape_watchseries(query):
     found_links = []
@@ -153,6 +156,26 @@ def scrape_watchseries(query):
         print(f"Error scraping WatchSeries: {e}")
     return found_links
 
+def scrape_afdah(query):
+    found_links = []
+    try:
+        search_url = f"https://afdah.info/search/{quote_plus(query)}"
+        response = requests.get(search_url, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(response.text, 'lxml')
+        first_result = soup.select_one('figure.fig-movie a')
+        if not first_result: return []
+
+        movie_page_url = first_result['href']
+        movie_page_res = requests.get(movie_page_url, headers=HEADERS, timeout=15)
+        movie_soup = BeautifulSoup(movie_page_res.text, 'lxml')
+
+        iframe = movie_soup.select_one('#player_iframe iframe')
+        if iframe and iframe.has_attr('src'):
+            found_links.append({"url": iframe['src'], "source": "Afdah", "lang": "Original"})
+    except Exception as e:
+        print(f"Error scraping Afdah: {e}")
+    return found_links
+
 def scrape_putlockers(query):
     found_links = []
     try:
@@ -174,65 +197,31 @@ def scrape_putlockers(query):
         print(f"Error scraping Putlockers: {e}")
     return found_links
 
-def scrape_skymovieshd(query):
+def scrape_0123movie(query):
     found_links = []
     try:
-        base_url = "https://skymovieshd.land/"
-        search_url = f"{base_url}?s={quote_plus(query)}"
-        search_response = requests.get(search_url, headers=HEADERS, timeout=10)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        
-        post = search_soup.find('div', class_='post-content')
-        if not post: return []
+        base_url = "https://0123movie.net/"
+        search_url = f"{base_url}search/{query.replace(' ', '-')}"
+        response = requests.get(search_url, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(response.text, 'lxml')
+        first_result = soup.select_one('.flw-item a')
+        if not first_result: return []
 
-        post_title = post.find('h2').text.lower() if post.find('h2') else ''
-        title_link_element = post.find('a')
-        if not title_link_element or not title_link_element.has_attr('href'): return []
+        movie_page_url = urljoin(base_url, first_result['href'])
+        movie_page_res = requests.get(movie_page_url, headers=HEADERS, timeout=15)
+        movie_soup = BeautifulSoup(movie_page_res.text, 'lxml')
         
-        movie_page_url = title_link_element['href']
-        movie_response = requests.get(movie_page_url, headers=HEADERS, timeout=10)
-        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-        
-        for link in movie_soup.find_all('a'):
-            link_text = link.text.lower()
-            if 'stream' in link_text or 'watch' in link_text:
-                lang = "Hindi" if "hindi" in post_title or "dubbed" in post_title else "Original"
-                full_url = urljoin(base_url, link.get('href', ''))
-                if full_url and ('stream' in full_url or 'vcloud' in full_url):
-                     found_links.append({"url": full_url, "source": "SkyMoviesHD", "lang": lang})
-                     break
-    except Exception as e:
-        print(f"Error scraping SkymoviesHD: {e}")
-    return found_links
-
-def scrape_dongobd(query):
-    found_links = []
-    try:
-        base_url = "https://dongobd.com/"
-        search_url = f"{base_url}?s={quote_plus(query)}"
-        search_response = requests.get(search_url, headers=HEADERS, timeout=15)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-
-        movie_link_element = search_soup.find('a', class_='lnk-blk')
-        if not movie_link_element or not movie_link_element.has_attr('href'): return []
-            
-        movie_page_url = movie_link_element['href']
-        post_title = movie_link_element.get('title', '').lower()
-        movie_response = requests.get(movie_page_url, headers=HEADERS, timeout=15)
-        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-        
-        iframe = movie_soup.find('iframe')
+        iframe = movie_soup.select_one('#iframe-embed')
         if iframe and iframe.has_attr('src'):
-            lang = "Hindi" if "hindi" in post_title or "dubbed" in post_title else "Original"
-            found_links.append({"url": urljoin(base_url, iframe['src']), "source": "DongoBD", "lang": lang})
+            found_links.append({"url": iframe['src'], "source": "0123Movie", "lang": "Original"})
     except Exception as e:
-        print(f"Error scraping Dongobd: {e}")
+        print(f"Error scraping 0123Movie: {e}")
     return found_links
 
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend v14 (Definitive Edition) is running!"
+    return "WellPlayer Scraper Backend v12 (Expanded Sources) is running!"
 
 @app.route('/search')
 def search():
@@ -266,9 +255,10 @@ def get_movie_details(tmdb_id):
         all_links.extend(scrape_hdhub4u(original_query))
         all_links.extend(scrape_cinefreak(original_query))
         all_links.extend(scrape_watchseries(original_query))
+        all_links.extend(scrape_afdah(original_query))
         all_links.extend(scrape_putlockers(original_query))
-        all_links.extend(scrape_skymovieshd(original_query))
-        all_links.extend(scrape_dongobd(original_query))
+        all_links.extend(scrape_0123movie(original_query))
+        # 123freemovies.net appears to be a duplicate of 0123movie.net, so we'll skip it to avoid redundancy
 
     if not all_links:
         return jsonify({"error": "No streaming links found for this movie."}), 404
@@ -300,6 +290,9 @@ def get_episodes():
     episode_links_list = []
     for episode in season_data.get('episodes', []):
         ep_num = episode.get('episode_number')
+        
+        # The robust scraper is best for TV episodes as it's ID-based and reliable.
+        # Text-scraping for individual episodes is very difficult.
         all_links_for_ep = scrape_vidsrc_to_sources(tmdb_id, 'tv', season_num, ep_num)
         
         episode_links_list.append({
