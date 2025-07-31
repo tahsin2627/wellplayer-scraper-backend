@@ -4,16 +4,50 @@ from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from urllib.parse import quote_plus, urljoin
+from functools import lru_cache
 
 app = Flask(__name__)
 CORS(app)
 
+# --- Configuration & Global Variables ---
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
+TMDB_API_BASE = "https://api.themoviedb.org/3"
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 
-# --- All of your existing scraper functions are here, UNTOUCHED ---
+# --- Helper Functions ---
+@lru_cache(maxsize=128)
+def get_tmdb_data(url):
+    """A cached function to fetch data from TMDB."""
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching TMDB data from {url}: {e}")
+        return None
 
+def parse_query_for_language(query):
+    """Parses a query to find a base title and a language hint."""
+    language_keywords = ['hindi', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'dubbed', 'dual audio']
+    query_parts = query.lower().split()
+    language_hint = None
+    
+    for word in query_parts:
+        if word in language_keywords:
+            language_hint = word
+            break
+            
+    base_query_parts = [part for part in query.split() if part.lower() not in language_keywords]
+    base_query = " ".join(base_query_parts)
+
+    if not base_query:
+        base_query = query
+        
+    return base_query, query, language_hint
+
+# --- Link Provider & Scraper Functions ---
 def get_vidsrc_links(imdb_id, media_type, season=None, episode=None):
-    """Source 1 & 2: vidsrc.to and vidsrc.me"""
+    """Source 1 & 2: vidsrc.to and vidsrc.me (Original Language)"""
     links = []
     try:
         if media_type == 'movie':
@@ -29,7 +63,7 @@ def get_vidsrc_links(imdb_id, media_type, season=None, episode=None):
     return links
 
 def get_2embed_link(imdb_id, media_type, season=None, episode=None):
-    """Source 3: 2embed.cc"""
+    """Source 3: 2embed.cc (Original Language)"""
     try:
         if media_type == 'movie':
             return f"https://2embed.cc/embed/{imdb_id}"
@@ -41,199 +75,175 @@ def get_2embed_link(imdb_id, media_type, season=None, episode=None):
         print(f"Error getting 2embed link: {e}")
     return None
 
-def scrape_skymovieshd(query):
-    """Source 4: skymovieshd.land"""
+def scrape_skymovieshd_for_dubs(query):
+    """Source 4: skymovieshd.land - Upgraded to search for dubbed content."""
     base_url = "https://skymovieshd.land/"
+    found_links = []
     try:
         search_url = f"{base_url}?s={quote_plus(query)}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = {'User-Agent': USER_AGENT}
         search_response = requests.get(search_url, headers=headers, timeout=10)
         search_soup = BeautifulSoup(search_response.text, 'lxml')
-        post_content = search_soup.find('div', class_='post-content')
-        if not post_content: return None
-        title_link_element = post_content.find('a')
-        if not title_link_element or not title_link_element.has_attr('href'): return None
+        
+        post = search_soup.find('div', class_='post-content')
+        if not post: return []
+
+        post_title = post.find('h2').text.lower() if post.find('h2') else ''
+        title_link_element = post.find('a')
+        if not title_link_element or not title_link_element.has_attr('href'): return []
+        
         movie_page_url = title_link_element['href']
         movie_response = requests.get(movie_page_url, headers=headers, timeout=10)
         movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-        found_links = []
+        
         for link in movie_soup.find_all('a'):
             link_text = link.text.lower()
-            link_href = link.get('href', '').lower()
-            if 'stream' in link_text or 'download' in link_text or 'watch' in link_text:
-                full_url = urljoin(base_url, link_href)
-                found_links.append(full_url)
-        return found_links[0] if found_links else None
-    except Exception as e:
-        print(f"Error scraping SkymoviesHD: {e}")
-        return None
+            
+            if 'stream' in link_text or 'watch' in link_text or 'download' in link_text:
+                lang = "Unknown"
+                if 'hindi' in post_title or 'hindi' in link_text:
+                    lang = "Hindi"
+                elif 'dual audio' in post_title or 'dual audio' in link_text:
+                    lang = "Dual Audio"
+                
+                full_url = urljoin(base_url, link.get('href', ''))
+                if full_url and ('stream' in full_url or 'vcloud' in full_url):
+                     found_links.append({"url": full_url, "source": "SkyMoviesHD", "lang": lang})
 
-def scrape_cinefreak(query):
-    """Source 5: cinefreak.net"""
-    base_url = "https://cinefreak.net/"
-    try:
-        search_url = f"{base_url}?s={quote_plus(query)}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        search_response = requests.get(search_url, headers=headers, timeout=15)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        movie_link_element = search_soup.find('a', class_='post-image-container')
-        if not movie_link_element or not movie_link_element.has_attr('href'): return None
-        movie_page_url = movie_link_element['href']
-        movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
-        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-        iframe = movie_soup.find('iframe')
-        if iframe and iframe.has_attr('src'):
-            return urljoin(base_url, iframe['src'])
-        return None
     except Exception as e:
-        print(f"Error scraping Cinefreak: {e}")
-        return None
+        print(f"Error scraping SkymoviesHD for dubs: {e}")
+    
+    return found_links[:1] # Return first good link
 
-def scrape_dongobd(query):
-    """Source 6: dongobd.com"""
-    base_url = "https://dongobd.com/"
-    try:
-        search_url = f"{base_url}?s={quote_plus(query)}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        search_response = requests.get(search_url, headers=headers, timeout=15)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        movie_link_element = search_soup.find('a', class_='lnk-blk')
-        if not movie_link_element or not movie_link_element.has_attr('href'):
-            return None
-        movie_page_url = movie_link_element['href']
-        movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
-        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-        iframe = movie_soup.find('iframe')
-        if iframe and iframe.has_attr('src'):
-            return urljoin(base_url, iframe['src'])
-        return None
-    except Exception as e:
-        print(f"Error scraping Dongobd: {e}")
-        return None
+# --- API Endpoints ---
+@app.route('/')
+def index():
+    return "WellPlayer Scraper Backend v3 is running!"
 
-# --- UPGRADED Main API Endpoint ---
 @app.route('/search')
 def search():
+    """Step 1: Search for media. Returns a list of potential matches."""
     query = request.args.get('query')
     if not query:
         return jsonify({"error": "A 'query' parameter is required."}), 400
-    
     if not TMDB_API_KEY:
-        return jsonify({"error": "TMDB_API_KEY is not configured on the server."}), 500
+        return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
 
-    try:
-        # --- Step 1: Search TMDB to get ID and media type ---
-        tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
-        tmdb_response = requests.get(tmdb_search_url)
-        tmdb_data = tmdb_response.json()
-
-        if not tmdb_data.get("results"):
-            return jsonify({"error": f"Could not find '{query}'."}), 404
+    base_query, _, _ = parse_query_for_language(query)
+    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(base_query)}"
+    data = get_tmdb_data(search_url)
+    
+    if not data or not data.get("results"):
+        return jsonify({"error": f"Could not find '{query}'."}), 404
         
-        first_result = tmdb_data["results"][0]
-        media_type = first_result.get("media_type")
-        tmdb_id = first_result.get("id")
-        title = first_result.get("name") or first_result.get("title")
-
-        # --- Step 2: Handle based on media type ---
-        if media_type == 'movie':
-            # If it's a movie, scrape for links directly
-            details_url = f"https://api.themoviedb.org/3/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
-            details_response = requests.get(details_url)
-            details_data = details_response.json()
-            imdb_id = details_data.get("imdb_id")
-
-            all_links = []
-            if imdb_id:
-                all_links.extend(get_vidsrc_links(imdb_id, 'movie'))
-                link_2embed = get_2embed_link(imdb_id, 'movie')
-                if link_2embed: all_links.append(link_2embed)
-            
-            # You can add more movie-specific direct scrapers here if you want
-            # skymovies_link = scrape_skymovieshd(query)
-            # if skymovies_link: all_links.append(skymovies_link)
-
-            if not all_links:
-                return jsonify({"error": "No streaming links found for this movie."}), 404
-            
-            return jsonify({ "type": "movie", "title": title, "links": list(set(all_links)) })
-
-        elif media_type == 'tv':
-            # If it's a TV series, get season details
-            details_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}"
-            details_response = requests.get(details_url)
-            details_data = details_response.json()
-            
-            seasons = details_data.get('seasons', [])
-            # Filter out "Specials" seasons which are often season 0
-            season_numbers = [s['season_number'] for s in seasons if s.get('season_number', 0) > 0]
-            
-            return jsonify({
-                "type": "tv",
-                "title": title,
-                "tmdb_id": tmdb_id,
-                "seasons": season_numbers
+    results = []
+    for item in data["results"]:
+        media_type = item.get("media_type")
+        if media_type in ["movie", "tv"]:
+            results.append({
+                "id": item.get("id"),
+                "type": media_type,
+                "title": item.get("title") or item.get("name"),
+                "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4],
+                "poster_path": item.get("poster_path")
             })
-        
-        else:
-            return jsonify({"error": "Unsupported media type found."}), 400
-        
-    except Exception as e:
-        print(f"An error occurred in /search: {e}")
-        return jsonify({"error": "An internal server error occurred."}), 500
+    return jsonify(results)
 
-# --- NEW Endpoint for fetching episodes ---
+@app.route('/movie/<int:tmdb_id>')
+def get_movie_details(tmdb_id):
+    """Step 2 (Movies): Get streaming links for a specific movie."""
+    original_query = request.args.get('query')
+    external_ids_url = f"{TMDB_API_BASE}/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
+    ids_data = get_tmdb_data(external_ids_url)
+    
+    if not ids_data:
+        return jsonify({"error": "Movie not found."}), 404
+
+    imdb_id = ids_data.get("imdb_id")
+    all_links = []
+    
+    # 1. Get Standard/Original Language Links
+    if imdb_id:
+        vidsrc_links = get_vidsrc_links(imdb_id, 'movie')
+        for link in vidsrc_links:
+            all_links.append({"url": link, "source": "VidSrc", "lang": "Original"})
+            
+        link_2embed = get_2embed_link(imdb_id, 'movie')
+        if link_2embed:
+            all_links.append({"url": link_2embed, "source": "2Embed", "lang": "Original"})
+
+    # 2. Get Dubbed Links using the original query
+    if original_query:
+        dubbed_links = scrape_skymovieshd_for_dubs(original_query)
+        all_links.extend(dubbed_links)
+        
+    if not all_links:
+        return jsonify({"error": "No streaming links found for this movie."}), 404
+            
+    final_links = {link['url']: link for link in all_links}
+    return jsonify({"links": list(final_links.values())})
+
+@app.route('/tv/<int:tmdb_id>')
+def get_tv_details(tmdb_id):
+    """Step 2 (TV): Get season info for a specific TV show."""
+    details_url = f"{TMDB_API_BASE}/tv/{tmdb_id}?api_key={TMDB_API_KEY}"
+    details_data = get_tmdb_data(details_url)
+    
+    if not details_data:
+        return jsonify({"error": "TV show not found."}), 404
+    
+    seasons = details_data.get('seasons', [])
+    season_list = [
+        {"season_number": s.get("season_number"), "name": s.get("name"), "episode_count": s.get("episode_count")} 
+        for s in seasons if s.get('season_number', 0) > 0
+    ]
+    return jsonify({"title": details_data.get("name"), "seasons": season_list})
+
 @app.route('/episodes')
 def get_episodes():
+    """Step 3 (TV): Get episode links for a specific season."""
     tmdb_id = request.args.get('tmdb_id')
     season_num = request.args.get('season')
+    original_query = request.args.get('query') # For future dubbed episode scraping
+
     if not tmdb_id or not season_num:
         return jsonify({"error": "tmdb_id and season are required."}), 400
 
-    try:
-        # Step 1: Get external IMDb ID for the series
-        external_ids_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
-        ids_response = requests.get(external_ids_url)
-        ids_data = ids_response.json()
-        imdb_id = ids_data.get("imdb_id")
+    external_ids_url = f"{TMDB_API_BASE}/tv/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
+    ids_data = get_tmdb_data(external_ids_url)
+    if not ids_data or not ids_data.get("imdb_id"):
+        return jsonify({"error": "Could not find IMDb ID for this series."}), 404
+    imdb_id = ids_data.get("imdb_id")
 
-        if not imdb_id:
-            return jsonify({"error": "Could not find IMDb ID for this series."}), 404
-
-        # Step 2: Get details for the specific season to find out how many episodes it has
-        season_details_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_num}?api_key={TMDB_API_KEY}"
-        season_response = requests.get(season_details_url)
-        season_data = season_response.json()
-        episodes = season_data.get('episodes', [])
+    season_details_url = f"{TMDB_API_BASE}/tv/{tmdb_id}/season/{season_num}?api_key={TMDB_API_KEY}"
+    season_data = get_tmdb_data(season_details_url)
+    if not season_data or not season_data.get('episodes'):
+        return jsonify({"error": "Could not find episodes for this season."}), 404
         
-        episode_links = []
-        for episode in episodes:
-            ep_num = episode.get('episode_number')
-            if ep_num:
-                # Construct links for each episode using our reliable sources
-                links = get_vidsrc_links(imdb_id, 'tv', season_num, ep_num)
-                link_2embed = get_2embed_link(imdb_id, 'tv', season_num, ep_num)
-                if link_2embed:
-                    links.append(link_2embed)
-                
-                episode_links.append({
-                    "episode": ep_num,
-                    "title": episode.get('name', f"Episode {ep_num}"),
-                    "links": links
-                })
+    episode_links_list = []
+    for episode in season_data.get('episodes', []):
+        ep_num = episode.get('episode_number')
+        if ep_num:
+            links = []
+            vidsrc_links = get_vidsrc_links(imdb_id, 'tv', season_num, ep_num)
+            for link in vidsrc_links:
+                links.append({"url": link, "source": "VidSrc", "lang": "Original"})
 
-        return jsonify({"season": season_num, "episodes": episode_links})
+            link_2embed = get_2embed_link(imdb_id, 'tv', season_num, ep_num)
+            if link_2embed:
+                links.append({"url": link_2embed, "source": "2Embed", "lang": "Original"})
+            
+            # NOTE: You can add a dubbed episode scraper here, similar to the movie one.
+            # if original_query: links.extend(scrape_for_dubbed_episode(...))
+            
+            episode_links_list.append({
+                "episode": ep_num,
+                "title": episode.get('name', f"Episode {ep_num}"),
+                "links": list({link['url']: link for link in links}.values())
+            })
 
-    except Exception as e:
-        print(f"An error occurred in /episodes: {e}")
-        return jsonify({"error": "An internal server error occurred."}), 500
-
-
-@app.route('/')
-def index():
-    return "WellPlayer Scraper Backend is running!"
+    return jsonify({"season": season_num, "episodes": episode_links_list})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
-
