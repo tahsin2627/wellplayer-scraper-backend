@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
@@ -12,14 +13,21 @@ CORS(app)
 # --- Configuration & Global Variables ---
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 TMDB_API_BASE = "https://api.themoviedb.org/3"
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+# Common headers for making requests look more like a real browser
+HEADERS = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.google.com/'
+}
 
 # --- Helper Functions ---
 @lru_cache(maxsize=128)
 def get_tmdb_data(url):
     """A cached function to fetch data from TMDB."""
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=HEADERS)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -38,125 +46,70 @@ def parse_query_for_language(query):
         
     return base_query, query
 
-# --- Link Provider & Scraper Functions ---
-def get_vidsrc_links(imdb_id, media_type, season=None, episode=None):
-    """Source 1 & 2: vidsrc.to and vidsrc.me (Original Language)"""
-    links = []
-    try:
-        if media_type == 'movie':
-            links.append(f"https://vidsrc.to/embed/movie/{imdb_id}")
-            links.append(f"https://vidsrc.me/embed/movie?imdb={imdb_id}")
-        elif media_type == 'tv':
-            s = season or '1'
-            e = episode or '1'
-            links.append(f"https://vidsrc.to/embed/tv/{imdb_id}/{s}-{e}")
-            links.append(f"https://vidsrc.me/embed/tv?imdb={imdb_id}&season={s}&episode={e}")
-    except Exception as e:
-        print(f"Error getting vidsrc links: {e}")
-    return links
-
-def get_2embed_link(imdb_id, media_type, season=None, episode=None):
-    """Source 3: 2embed.cc (Original Language)"""
-    try:
-        if media_type == 'movie':
-            return f"https://2embed.cc/embed/{imdb_id}"
-        elif media_type == 'tv':
-            s = season or '1'
-            e = episode or '1'
-            return f"https://2embed.cc/embed/tv?imdb={imdb_id}&s={s}&e={e}"
-    except Exception as e:
-        print(f"Error getting 2embed link: {e}")
-    return None
-
-def scrape_skymovieshd_for_dubs(query):
-    """Source 4: skymovieshd.land - Upgraded to search for dubbed content."""
-    base_url = "https://skymovieshd.land/"
+# --- ADVANCED "DEEP" SCRAPER ---
+def scrape_vidsrc_pro(tmdb_id, media_type, season=None, episode=None):
+    """
+    An advanced scraper for sources like VidSrc.Pro.
+    It finds the server list and extracts direct iframe links.
+    """
     found_links = []
     try:
-        search_url = f"{base_url}?s={quote_plus(query)}"
-        headers = {'User-Agent': USER_AGENT}
-        search_response = requests.get(search_url, headers=headers, timeout=10)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        
-        post = search_soup.find('div', class_='post-content')
-        if not post: return []
-
-        post_title = post.find('h2').text.lower() if post.find('h2') else ''
-        title_link_element = post.find('a')
-        if not title_link_element or not title_link_element.has_attr('href'): return []
-        
-        movie_page_url = title_link_element['href']
-        movie_response = requests.get(movie_page_url, headers=headers, timeout=10)
-        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
-        
-        for link in movie_soup.find_all('a'):
-            link_text = link.text.lower()
-            
-            if 'stream' in link_text or 'watch' in link_text or 'download' in link_text:
-                lang = "Unknown"
-                if 'hindi' in post_title or 'hindi' in link_text:
-                    lang = "Hindi"
-                elif 'dual audio' in post_title or 'dual audio' in link_text:
-                    lang = "Dual Audio"
-                
-                full_url = urljoin(base_url, link.get('href', ''))
-                if full_url and ('stream' in full_url or 'vcloud' in full_url):
-                     found_links.append({"url": full_url, "source": "SkyMoviesHD", "lang": lang})
-
-    except Exception as e:
-        print(f"Error scraping SkymoviesHD for dubs: {e}")
-    
-    return found_links[:1]
-
-def scrape_cinefreak_for_dubs(query):
-    """Source 5: cinefreak.net - Upgraded for dubbed content."""
-    base_url = "https://cinefreak.net/"
-    found_links = []
-    try:
-        search_url = f"{base_url}?s={quote_plus(query)}"
-        headers = {'User-Agent': USER_AGENT}
-        search_response = requests.get(search_url, headers=headers, timeout=15)
-        search_soup = BeautifulSoup(search_response.text, 'lxml')
-        
-        movie_link_element = search_soup.find('a', class_='post-image-container')
-        if not movie_link_element or not movie_link_element.has_attr('href'):
+        # Step 1: Construct the embed URL
+        base_url = "https://vidsrc.pro/embed"
+        if media_type == 'movie':
+            embed_url = f"{base_url}/movie/{tmdb_id}"
+        elif media_type == 'tv':
+            embed_url = f"{base_url}/tv/{tmdb_id}/{season}-{episode}"
+        else:
             return []
-            
-        movie_page_url = movie_link_element['href']
-        post_title = movie_link_element.get('title', '').lower()
 
-        movie_response = requests.get(movie_page_url, headers=headers, timeout=15)
-        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
+        # Step 2: Get the embed page content
+        response = requests.get(embed_url, headers=HEADERS)
+        if response.status_code != 200: return []
         
-        iframe = movie_soup.find('iframe')
-        if iframe and iframe.has_attr('src'):
-            lang = "Unknown"
-            if 'hindi' in post_title:
-                lang = "Hindi"
-            elif 'dubbed' in post_title:
-                lang = "Dubbed"
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        # Step 3: Find all server tabs
+        server_tabs = soup.find_all('div', class_='server')
+        for tab in server_tabs:
+            server_name = tab.text.strip()
+            data_hash = tab.get('data-hash')
+
+            if not data_hash: continue
+
+            # Step 4: Call the hidden API to get the source URL
+            # The referer header is crucial for this API call to work
+            api_url = f"https://vidsrc.pro/rcp/{data_hash}"
+            api_headers = HEADERS.copy()
+            api_headers['Referer'] = embed_url
             
-            full_url = urljoin(base_url, iframe['src'])
-            found_links.append({"url": full_url, "source": "Cinefreak", "lang": lang})
+            source_response = requests.get(api_url, headers=api_headers)
+            if source_response.status_code != 200: continue
+            
+            source_data = source_response.json()
+            iframe_url = source_data.get('result', {}).get('url')
+
+            if iframe_url:
+                # The final URL is often URL-encoded, so we clean it up
+                final_url = urljoin("https:", iframe_url)
+                
+                lang = "Unknown"
+                if "hindi" in server_name.lower(): lang = "Hindi"
+                elif "dub" in server_name.lower(): lang = "Dubbed"
+                elif server_name in ["VidSrc", "2Embed"]: lang = "Original"
+
+                found_links.append({"url": final_url, "source": server_name, "lang": lang})
 
     except Exception as e:
-        print(f"Error scraping Cinefreak: {e}")
-        
+        print(f"Error in scrape_vidsrc_pro: {e}")
+
     return found_links
 
-def run_all_scrapers(query):
-    """Runs all text-based scrapers and collects the results."""
-    all_scraped_links = []
-    
-    all_scraped_links.extend(scrape_skymovieshd_for_dubs(query))
-    all_scraped_links.extend(scrape_cinefreak_for_dubs(query))
-    
-    return all_scraped_links
 
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend v5 is running!"
+    return "WellPlayer Scraper Backend v6 is running!"
 
 @app.route('/search')
 def search():
@@ -167,10 +120,7 @@ def search():
     if not TMDB_API_KEY:
         return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
 
-    # Clean the query for the TMDB search
     base_query, _ = parse_query_for_language(query)
-    
-    # Use the cleaned 'base_query' for the TMDB API call
     search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(base_query)}"
     data = get_tmdb_data(search_url)
     
@@ -192,37 +142,10 @@ def search():
 
 @app.route('/movie/<int:tmdb_id>')
 def get_movie_details(tmdb_id):
-    """Step 2 (Movies): Get streaming links with improved fallback logic."""
-    original_query = request.args.get('query')
-    all_links = []
+    """Step 2 (Movies): Get streaming links using the advanced scraper."""
+    # The original_query is no longer needed here as the TMDB ID is more reliable
+    all_links = scrape_vidsrc_pro(tmdb_id, 'movie')
 
-    # --- Phase 1: Try the fast and reliable IMDb-based sources first ---
-    details_url = f"{TMDB_API_BASE}/movie/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids"
-    movie_data = get_tmdb_data(details_url)
-
-    if not movie_data:
-        return jsonify({"error": "Movie not found with that ID."}), 404
-
-    imdb_id = movie_data.get("external_ids", {}).get("imdb_id")
-    movie_title = movie_data.get("title")
-
-    if imdb_id:
-        vidsrc_links = get_vidsrc_links(imdb_id, 'movie')
-        for link in vidsrc_links:
-            all_links.append({"url": link, "source": "VidSrc", "lang": "Original"})
-
-        link_2embed = get_2embed_link(imdb_id, 'movie')
-        if link_2embed:
-            all_links.append({"url": link_2embed, "source": "2Embed", "lang": "Original"})
-            
-    # --- Phase 2: Use Text-Based Scrapers for Dubbed Content or as a Fallback ---
-    scrape_query = original_query or movie_title
-    
-    if scrape_query:
-        scraped_links = run_all_scrapers(scrape_query)
-        all_links.extend(scraped_links)
-
-    # --- Final Step: Return results ---
     if not all_links:
         return jsonify({"error": "No streaming links found for this movie."}), 404
             
@@ -250,17 +173,16 @@ def get_episodes():
     """Step 3 (TV): Get episode links for a specific season."""
     tmdb_id = request.args.get('tmdb_id')
     season_num = request.args.get('season')
-    original_query = request.args.get('query')
 
     if not tmdb_id or not season_num:
         return jsonify({"error": "tmdb_id and season are required."}), 400
 
-    external_ids_url = f"{TMDB_API_BASE}/tv/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}"
-    ids_data = get_tmdb_data(external_ids_url)
-    if not ids_data or not ids_data.get("imdb_id"):
-        return jsonify({"error": "Could not find IMDb ID for this series."}), 404
-    imdb_id = ids_data.get("imdb_id")
-
+    # Use the new advanced scraper for episodes as well
+    all_links = scrape_vidsrc_pro(tmdb_id, 'tv', season_num, '1') # Scrape for first episode to get general links
+    
+    # We will assume for now all episodes are on the same servers.
+    # A full implementation would scrape for each episode individually.
+    
     season_details_url = f"{TMDB_API_BASE}/tv/{tmdb_id}/season/{season_num}?api_key={TMDB_API_KEY}"
     season_data = get_tmdb_data(season_details_url)
     if not season_data or not season_data.get('episodes'):
@@ -269,24 +191,25 @@ def get_episodes():
     episode_links_list = []
     for episode in season_data.get('episodes', []):
         ep_num = episode.get('episode_number')
-        if ep_num:
-            links = []
-            vidsrc_links = get_vidsrc_links(imdb_id, 'tv', season_num, ep_num)
-            for link in vidsrc_links:
-                links.append({"url": link, "source": "VidSrc", "lang": "Original"})
+        
+        # We re-use the scraped server links for each episode, just changing the episode number in the URL
+        current_episode_links = []
+        for server_link in all_links:
+            new_link = server_link.copy()
+            # Replace the episode number in the URL (e.g., .../s1-e1 -> .../s1-e2)
+            new_link['url'] = re.sub(r'e(\d+)$', f'e{ep_num}', new_link['url'])
+            new_link['url'] = re.sub(r'episode=(\d+)$', f'episode={ep_num}', new_link['url'])
+            current_episode_links.append(new_link)
 
-            link_2embed = get_2embed_link(imdb_id, 'tv', season_num, ep_num)
-            if link_2embed:
-                links.append({"url": link_2embed, "source": "2Embed", "lang": "Original"})
-            
-            episode_links_list.append({
-                "episode": ep_num,
-                "title": episode.get('name', f"Episode {ep_num}"),
-                "links": list({link['url']: link for link in links}.values())
-            })
+        episode_links_list.append({
+            "episode": ep_num,
+            "title": episode.get('name', f"Episode {ep_num}"),
+            "links": current_episode_links
+        })
 
     return jsonify({"season": season_num, "episodes": episode_links_list})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
