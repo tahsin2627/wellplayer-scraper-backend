@@ -26,6 +26,18 @@ def get_tmdb_data(url):
         print(f"Error fetching TMDB data from {url}: {e}")
         return None
 
+def parse_query_for_language(query):
+    """Parses a query to find a base title."""
+    language_keywords = ['hindi', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'dubbed', 'dual audio']
+    
+    base_query_parts = [part for part in query.split() if part.lower() not in language_keywords]
+    base_query = " ".join(base_query_parts)
+
+    if not base_query:
+        base_query = query
+        
+    return base_query, query
+
 # --- Link Provider & Scraper Functions ---
 def get_vidsrc_links(imdb_id, media_type, season=None, episode=None):
     """Source 1 & 2: vidsrc.to and vidsrc.me (Original Language)"""
@@ -144,7 +156,7 @@ def run_all_scrapers(query):
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend v4 is running!"
+    return "WellPlayer Scraper Backend v5 is running!"
 
 @app.route('/search')
 def search():
@@ -155,7 +167,11 @@ def search():
     if not TMDB_API_KEY:
         return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
 
-    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(query)}"
+    # Clean the query for the TMDB search
+    base_query, _ = parse_query_for_language(query)
+    
+    # Use the cleaned 'base_query' for the TMDB API call
+    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(base_query)}"
     data = get_tmdb_data(search_url)
     
     if not data or not data.get("results"):
