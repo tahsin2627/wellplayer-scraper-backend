@@ -42,63 +42,44 @@ def parse_query_for_language(query):
     base_query = " ".join(base_query_parts)
     return base_query if base_query else query, query
 
-# --- Source Functions ---
-
-## --- NEW PRIMARY SCRAPER: SFlix --- ##
+# --- Source Functions (Unchanged) ---
 def scrape_sflix(tmdb_id, media_type, season=None, episode=None):
     found_links = []
     try:
         base_url = "https://sflix.to"
-        
-        # Step 1: Get the "Episode ID" from the first API call
         episodes_api_url = f"{base_url}/ajax/movie/episodes/{tmdb_id}"
         episodes_response = requests.get(episodes_api_url, headers=HEADERS, timeout=10)
         episodes_soup = BeautifulSoup(episodes_response.json()['html'], 'lxml')
-        
         episode_id = None
         if media_type == 'movie':
             episode_item = episodes_soup.select_one('.ep-item')
-            if episode_item:
-                episode_id = episode_item.get('data-id')
-        else: # tv
+            if episode_item: episode_id = episode_item.get('data-id')
+        else:
             for ep_item in episodes_soup.select('.ep-item'):
                 if ep_item.get('data-season') == str(season) and ep_item.get('data-episode') == str(episode):
                     episode_id = ep_item.get('data-id')
                     break
-        
-        if not episode_id:
-            print("SFlix: Could not find episode ID.")
-            return []
-
-        # Step 2: Get the Server List from the second API call
+        if not episode_id: return []
         servers_api_url = f"{base_url}/ajax/episode/servers/{episode_id}"
         servers_response = requests.get(servers_api_url, headers=HEADERS, timeout=10)
         servers_soup = BeautifulSoup(servers_response.json()['html'], 'lxml')
-
-        # Step 3: Get the Final Embed Link from the third API call for each server
         for server_item in servers_soup.select('.server-item'):
             server_id = server_item.get('data-id')
             server_name = server_item.text.strip()
-            
             final_link_api_url = f"{base_url}/ajax/server/{server_id}"
             final_link_response = requests.get(final_link_api_url, headers=HEADERS, timeout=10)
-            
             final_link_json = final_link_response.json()
             if final_link_json.get('status') and final_link_json.get('result'):
                 embed_url = "https:" + final_link_json['result']['url']
                 lang = "Dubbed" if "dub" in server_name.lower() else "Original"
                 found_links.append({"url": embed_url, "source": f"SFlix - {server_name}", "lang": lang})
-                
     except Exception as e:
         print(f"Error scraping SFlix: {e}")
-        
     return found_links
 
-## --- LAYER 2: STABLE API SOURCES --- ##
 def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
     all_links = []
     media_id_str = f"tv/{tmdb_id}" if media_type == 'tv' else f"movie/{tmdb_id}"
-
     for provider in API_PROVIDERS:
         try:
             print(f"Trying API provider: {provider}")
@@ -106,7 +87,6 @@ def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
             info_res = requests.get(info_url, timeout=20)
             if info_res.status_code != 200: continue
             info_data = info_res.json()
-
             episode_id = None
             if media_type == 'movie':
                 episode_id = info_data.get('id')
@@ -114,20 +94,15 @@ def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
                 target_season = next((s for s in info_data.get('episodes', []) if str(s.get('season')) == str(season)), None)
                 if target_season:
                     target_episode = next((e for e in target_season.get('episodes', []) if str(e.get('number')) == str(episode)), None)
-                    if target_episode:
-                        episode_id = target_episode.get('id')
-            
+                    if target_episode: episode_id = target_episode.get('id')
             if not episode_id: continue
-
             watch_url = f"{STREAMING_API_URL}/movies/{provider}/watch?episodeId={episode_id}&mediaId={media_id_str}"
             watch_res = requests.get(watch_url, timeout=20)
             if watch_res.status_code != 200: continue
             watch_data = watch_res.json()
-            
             for source in watch_data.get('sources', []):
                 quality = source.get('quality', 'auto')
                 all_links.append({"url": source['url'], "source": f"{provider.title()} - {quality}", "lang": "Original"})
-            
             if all_links:
                 print(f"Found links from API provider: {provider}")
                 break
@@ -136,17 +111,15 @@ def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
             continue
     return all_links
 
-## --- LAYER 3: TRUSTED ID-BASED SOURCES --- ##
+# ... (All other scraper functions are unchanged) ...
 def get_vidsrc_link(imdb_id):
     try:
         return [{"url": f"https://vidsrc.to/embed/movie/{imdb_id}", "source": "VidSrc.to", "lang": "Original"}]
     except: return []
-
 def get_2embed_link(imdb_id):
     try:
         return [{"url": f"https://www.2embed.cc/embed/{imdb_id}", "source": "2Embed", "lang": "Original"}]
     except: return []
-
 def scrape_streamblasters(tmdb_id):
     found_links = []
     try:
@@ -163,8 +136,6 @@ def scrape_streamblasters(tmdb_id):
     except Exception as e:
         print(f"Error scraping StreamBlasters: {e}")
     return found_links
-
-## --- LAYER 4: TEXT-BASED FALLBACK --- ##
 def scrape_dongobd(query):
     found_links = []
     try:
@@ -189,20 +160,18 @@ def scrape_dongobd(query):
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend (SFlix Edition) is running!"
+    return "WellPlayer Scraper Backend (SFlix Edition - TV Fix) is running!"
 
 @app.route('/search')
 def search():
+    # This endpoint is unchanged
     query = request.args.get('query')
     if not query: return jsonify({"error": "A 'query' parameter is required."}), 400
     if not TMDB_API_KEY: return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
-
     base_query, _ = parse_query_for_language(query)
     search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(base_query)}"
     data = get_tmdb_data(search_url)
-    
     if not data or not data.get("results"): return jsonify({"error": f"Could not find '{query}'."}), 404
-        
     results = [
         {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4], "poster_path": item.get("poster_path")}
         for item in data["results"] if item.get("media_type") in ["movie", "tv"]
@@ -211,41 +180,32 @@ def search():
 
 @app.route('/movie/<int:tmdb_id>')
 def get_movie_details(tmdb_id):
+    # This endpoint is unchanged
     original_query = request.args.get('query')
     all_links = []
-    
     ids_data = get_tmdb_data(f"{TMDB_API_BASE}/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
     imdb_id = ids_data.get("imdb_id") if ids_data else None
-
-    # --- Run all layers in order ---
-    # Layer 1: SFlix Advanced Scraper
     all_links.extend(scrape_sflix(tmdb_id, 'movie'))
-    
-    # Layer 2: Stable Multi-Provider API (if Layer 1 fails)
     if not all_links:
         print("SFlix failed, trying Stable API...")
         all_links.extend(get_stream_links_from_api(tmdb_id, 'movie'))
-    
-    # Layer 3 & 4: Other sources (run in parallel for speed)
     with ThreadPoolExecutor(max_workers=5) as executor:
         future_streamblasters = executor.submit(scrape_streamblasters, tmdb_id)
         future_vidsrc = executor.submit(get_vidsrc_link, imdb_id) if imdb_id else None
         future_2embed = executor.submit(get_2embed_link, imdb_id) if imdb_id else None
         future_dongobd = executor.submit(scrape_dongobd, original_query) if original_query else None
-
         if future_vidsrc: all_links.extend(future_vidsrc.result())
         if future_2embed: all_links.extend(future_2embed.result())
         all_links.extend(future_streamblasters.result())
         if future_dongobd: all_links.extend(future_dongobd.result())
-        
     if not all_links:
         return jsonify({"error": "No streaming links found for this movie."}), 404
-            
     final_links = {link['url']: link for link in all_links}
     return jsonify({"links": list(final_links.values())})
 
 @app.route('/tv/<int:tmdb_id>')
 def get_tv_details(tmdb_id):
+    # This endpoint is unchanged
     details_data = get_tmdb_data(f"{TMDB_API_BASE}/tv/{tmdb_id}?api_key={TMDB_API_KEY}")
     if not details_data: return jsonify({"error": "TV show not found."}), 404
     seasons = [
@@ -254,34 +214,72 @@ def get_tv_details(tmdb_id):
     ]
     return jsonify({"title": details_data.get("name"), "seasons": seasons})
 
+## --- THIS IS THE CORRECTED/UPGRADED ENDPOINT --- ##
 @app.route('/episodes')
 def get_episodes():
-    tmdb_id, season_num = request.args.get('tmdb_id'), request.args.get('season')
-    if not tmdb_id or not season_num: return jsonify({"error": "tmdb_id and season are required."}), 400
+    tmdb_id = request.args.get('tmdb_id')
+    season_num = request.args.get('season')
+    if not tmdb_id or not season_num:
+        return jsonify({"error": "tmdb_id and season are required."}), 400
 
-    season_details = get_tmdb_data(f"{TMDB_API_BASE}/tv/{tmdb_id}/season/{season_num}?api_key={TMDB_API_KEY}")
-    if not season_details or not season_details.get('episodes'):
-        return jsonify({"error": "Could not find episodes for this season."}), 404
+    # The goal is to return a list of all episodes for the season, with links for each.
+    # The most efficient way is to get all episode IDs from ONE reliable source first.
+    
+    # Step 1: Get all episode data for the season from SFlix
+    all_episodes_from_sflix = []
+    try:
+        sflix_episodes_url = f"https://sflix.to/ajax/movie/episodes/{tmdb_id}"
+        sflix_response = requests.get(sflix_episodes_url, headers=HEADERS, timeout=10)
+        sflix_soup = BeautifulSoup(sflix_response.json()['html'], 'lxml')
         
-    episode_links_list = []
-    for episode in season_details.get('episodes', []):
-        ep_num = episode.get('episode_number')
-        all_links_for_ep = []
+        # Filter for the specific season we want
+        season_episodes = [ep for ep in sflix_soup.select('.ep-item') if ep.get('data-season') == str(season_num)]
         
-        # For episodes, we prioritize the most reliable sources
-        all_links_for_ep.extend(scrape_sflix(tmdb_id, 'tv', season_num, ep_num))
-        
-        if not all_links_for_ep:
-            print(f"SFlix failed for S{season_num}E{ep_num}, trying Stable API...")
-            all_links_for_ep.extend(get_stream_links_from_api(tmdb_id, 'tv', season_num, ep_num))
+        for ep_item in season_episodes:
+            all_episodes_from_sflix.append({
+                "episode": ep_item.get('data-episode'),
+                "title": ep_item.get('title'),
+                "sflix_id": ep_item.get('data-id') # This is the ID we need to get servers
+            })
+    except Exception as e:
+        print(f"Could not get episode list from SFlix: {e}")
+        # If SFlix fails, we can try the Consumet API as a backup, but for now we'll stop
+        return jsonify({"error": "Failed to fetch episode list from primary source."}), 500
 
-        episode_links_list.append({
-            "episode": ep_num,
-            "title": episode.get('name', f"Episode {ep_num}"),
-            "links": list({link['url']: link for link in all_links_for_ep}.values())
-        })
+    # Step 2: Now, for each episode the user clicks, the FRONTEND will ask for its specific links.
+    # We need a NEW endpoint for this. But to fix the current issue, we will pre-fetch for the first episode.
+    # This is a temporary fix to make the current frontend work.
+    
+    # Let's adjust the logic to match the frontend's expectation of receiving links for all episodes
+    final_episode_list = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # Create a map of episode numbers to future objects that will fetch links
+        future_to_episode = {
+            executor.submit(scrape_sflix, tmdb_id, 'tv', season_num, ep['episode']): ep 
+            for ep in all_episodes_from_sflix
+        }
+        
+        for future in future_to_episode:
+            episode_data = future_to_episode[future]
+            try:
+                links = future.result()
+                final_episode_list.append({
+                    "episode": int(episode_data['episode']),
+                    "title": episode_data['title'],
+                    "links": links
+                })
+            except Exception as exc:
+                print(f"Episode fetch generated an exception: {exc}")
+                final_episode_list.append({
+                    "episode": int(episode_data['episode']),
+                    "title": episode_data['title'],
+                    "links": []
+                })
 
-    return jsonify({"season": season_num, "episodes": episode_links_list})
+    # Sort the list by episode number before returning
+    final_episode_list.sort(key=lambda x: x['episode'])
+    
+    return jsonify({"season": season_num, "episodes": final_episode_list})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
