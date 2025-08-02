@@ -31,15 +31,30 @@ def get_tmdb_data(url):
         print(f"Error fetching TMDB data: {e}")
         return None
 
+def parse_query_for_language(query):
+    language_keywords = ['hindi', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'dubbed', 'dual audio', 'multi audio']
+    base_query_parts = [part for part in query.split() if part.lower() not in language_keywords]
+    base_query = " ".join(base_query_parts)
+    return base_query if base_query else query, query
+
+def find_on_tmdb_by_imdb_id(imdb_id):
+    """Finds a movie or show on TMDB using its IMDb ID."""
+    find_url = f"{TMDB_API_BASE}/find/{imdb_id}?api_key={TMDB_API_KEY}&external_source=imdb_id"
+    data = get_tmdb_data(find_url)
+    if data:
+        results = data.get('movie_results', []) + data.get('tv_results', [])
+        if results:
+            media_type = 'movie' if 'title' in results[0] else 'tv'
+            return results[0], media_type
+    return None, None
+    
 # --- Source Functions ---
 
-## --- LAYER 1: STABLE API SOURCES --- ##
 def get_stream_links_from_api(tmdb_id, media_type, s=None, e=None):
     all_links = []
     media_id_str = f"tv/{tmdb_id}" if media_type == 'tv' else f"movie/{tmdb_id}"
     for provider in API_PROVIDERS:
         try:
-            print(f"Trying API provider: {provider}")
             info_url = f"{STREAMING_API_URL}/movies/{provider}/info?id={media_id_str}"
             info_res = requests.get(info_url, timeout=20)
             if info_res.status_code != 200: continue
@@ -58,17 +73,13 @@ def get_stream_links_from_api(tmdb_id, media_type, s=None, e=None):
             if watch_res.status_code != 200: continue
             watch_data = watch_res.json()
             for source in watch_data.get('sources', []):
-                quality = source.get('quality', 'auto')
-                all_links.append({"url": source['url'], "source": f"{provider.title()} ({quality})", "lang": "Original"})
-            if all_links:
-                print(f"Found links from API provider: {provider}")
-                break
+                all_links.append({"url": source['url'], "source": f"{provider.title()} ({source.get('quality', 'auto')})", "lang": "Original"})
+            if all_links: break
         except Exception as err:
             print(f"Error with API provider {provider}: {err}")
             continue
     return all_links
 
-## --- LAYER 2: TRUSTED FALLBACKS --- ##
 def get_fallback_links(imdb_id, media_type, s=None, e=None):
     links = []
     if not imdb_id: return []
@@ -84,7 +95,6 @@ def get_fallback_links(imdb_id, media_type, s=None, e=None):
     except Exception as err: print(f"Error with 2Embed fallback: {err}")
     return links
 
-## --- LAYER 3: DUBBED HUNTER SCRAPERS --- ##
 def scrape_hdhub4u(query):
     found_links = []
     try:
@@ -115,21 +125,50 @@ def scrape_hdhub4u(query):
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend (Universal Edition) is running!"
+    return "WellPlayer Scraper Backend (Definitive Universal Edition) is running!"
 
 @app.route('/search')
 def search():
     query = request.args.get('query')
     if not query: return jsonify({"error": "A 'query' parameter is required."}), 400
     if not TMDB_API_KEY: return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
-    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(query)}"
+    
+    tmdb_results = []
+    imdb_result = None
+    
+    base_query, _ = parse_query_for_language(query)
+    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(base_query)}"
     data = get_tmdb_data(search_url)
-    if not data or not data.get("results"): return jsonify({"error": f"Could not find '{query}'."}), 404
-    results = [
-        {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[:4], "poster_path": item.get("poster_path")}
-        for item in data["results"] if item.get("media_type") in ["movie", "tv"]
-    ]
-    return jsonify(results)
+    if data and data.get("results"):
+        tmdb_results = [
+            {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[:4], "poster_path": item.get("poster_path")}
+            for item in data["results"] if item.get("media_type") in ["movie", "tv"]
+        ]
+    
+    if query.startswith('tt'):
+        item, media_type = find_on_tmdb_by_imdb_id(query)
+        if item and media_type:
+            imdb_result = {
+                "id": item.get("id"),
+                "type": media_type,
+                "title": item.get("title") or item.get("name"),
+                "year": (item.get("release_date", "") or item.get("first_air_date", ""))[:4],
+                "poster_path": item.get("poster_path")
+            }
+
+    final_results = []
+    if imdb_result:
+        final_results.append(imdb_result)
+    
+    for res in tmdb_results:
+        is_duplicate = imdb_result and res.get('id') == imdb_result.get('id')
+        if not is_duplicate:
+            final_results.append(res)
+
+    if not final_results:
+        return jsonify({"error": f"Could not find '{query}'."}), 404
+        
+    return jsonify(final_results)
 
 @app.route('/movie/<int:tmdb_id>')
 def get_movie_details(tmdb_id):
@@ -144,20 +183,20 @@ def get_movie_details(tmdb_id):
     if not all_links:
         all_links.extend(get_fallback_links(imdb_id, 'imdb', 'movie'))
 
-    # Layer 2: Dubbed Hunter Scrapers (run in parallel)
+    # Layer 2: Dubbed Hunter Scrapers
     if original_query:
-        dubbed_scrapers = [scrape_hdhub4u] # Add other text scrapers like cinefreak here if you want
+        dubbed_scrapers = [scrape_hdhub4u]
         with ThreadPoolExecutor(max_workers=len(dubbed_scrapers)) as executor:
-            results = executor.map(lambda f: f(original_query), dubbed_scrapers)
-            for result in results:
+            scraper_results = executor.map(lambda f: f(original_query), dubbed_scrapers)
+            for result in scraper_results:
                 all_links.extend(result)
 
     if not all_links:
         return jsonify({"error": "No streaming links found for this movie."}), 404
         
-    final_links = {link['url']: link for link in all_links}
-    return jsonify({"links": list(final_links.values())})
+    return jsonify({"links": list({link['url']: link for link in all_links}.values())})
 
+# ... (TV Endpoints are unchanged from the working version) ...
 @app.route('/tv/<int:tmdb_id>')
 def get_tv_details(tmdb_id):
     details_data = get_tmdb_data(f"{TMDB_API_BASE}/tv/{tmdb_id}?api_key={TMDB_API_KEY}")
