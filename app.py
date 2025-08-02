@@ -13,6 +13,7 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 STREAMING_API_URL = "https://consumet-api-movies-nine.vercel.app"
 API_PROVIDERS = ['flixhq', 'goku', 'dramacool']
+MANUAL_SOURCE_API = "https://wellplayer-admin.vercel.app/api/get"
 
 # --- Helper Functions ---
 @lru_cache(maxsize=128)
@@ -25,6 +26,29 @@ def get_tmdb_data(url):
         print(f"Error fetching TMDB data from {url}: {e}")
         return None
 
+# --- Source Functions ---
+
+## --- YOUR PERSONAL DATABASE (HIGHEST PRIORITY) --- ##
+def get_manual_links_from_db(tmdb_id=None, imdb_id=None):
+    if not MANUAL_SOURCE_API: return []
+    try:
+        # Build the query based on which ID is available
+        if tmdb_id:
+            api_url = f"{MANUAL_SOURCE_API}?tmdb_id={tmdb_id}"
+        elif imdb_id:
+            api_url = f"{MANUAL_SOURCE_API}?imdb_id={imdb_id}"
+        else:
+            return [] # No ID to search with
+            
+        response = requests.get(api_url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"Found {len(data.get('links', []))} manual links.")
+            return data.get('links', [])
+    except Exception as e:
+        print(f"Error fetching from manual DB: {e}")
+    return []
+
 def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
     all_links = []
     media_id_str = f"tv/{tmdb_id}" if media_type == 'tv' else f"movie/{tmdb_id}"
@@ -35,7 +59,6 @@ def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
             info_res = requests.get(info_url, timeout=20)
             if info_res.status_code != 200: continue
             info_data = info_res.json()
-
             episode_id = None
             if media_type == 'movie':
                 episode_id = info_data.get('id')
@@ -45,18 +68,14 @@ def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
                     target_episode = next((e for e in target_season.get('episodes', []) if str(e.get('number')) == str(episode)), None)
                     if target_episode:
                         episode_id = target_episode.get('id')
-            
             if not episode_id: continue
-
             watch_url = f"{STREAMING_API_URL}/movies/{provider}/watch?episodeId={episode_id}&mediaId={media_id_str}"
             watch_res = requests.get(watch_url, timeout=20)
             if watch_res.status_code != 200: continue
             watch_data = watch_res.json()
-            
             for source in watch_data.get('sources', []):
                 quality = source.get('quality', 'auto')
                 all_links.append({"url": source['url'], "source": f"{provider.title()} ({quality})", "lang": "Original"})
-            
             if all_links:
                 print(f"Found links from API provider: {provider}")
                 break
@@ -65,10 +84,8 @@ def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
             continue
     return all_links
 
-# --- FALLBACK SOURCES (Re-added) ---
 def get_fallback_links(id_value, id_type, media_type, season=None, episode=None):
     links = []
-    # VidSrc.to
     try:
         if id_type == 'imdb':
             url = f"https://vidsrc.to/embed/{media_type}/{id_value}"
@@ -76,7 +93,6 @@ def get_fallback_links(id_value, id_type, media_type, season=None, episode=None)
             links.append({"url": url, "source": "VidSrc.to", "lang": "Backup"})
     except Exception as e:
         print(f"Error with VidSrc.to fallback: {e}")
-    # 2Embed.cc
     try:
         if id_type == 'imdb':
             url = f"https://www.2embed.cc/embed/{media_type}/{id_value}"
@@ -86,11 +102,10 @@ def get_fallback_links(id_value, id_type, media_type, season=None, episode=None)
         print(f"Error with 2Embed fallback: {e}")
     return links
 
-
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend (API + Fallbacks) is running!"
+    return "WellPlayer Scraper Backend (Definitive Final) is running!"
 
 @app.route('/search')
 def search():
@@ -108,16 +123,21 @@ def search():
 
 @app.route('/movie/<int:tmdb_id>')
 def get_movie_details(tmdb_id):
-    # Try the API first
-    all_links = get_stream_links_from_api(tmdb_id, 'movie')
+    all_links = []
+    ids_data = get_tmdb_data(f"{TMDB_API_BASE}/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
+    imdb_id = ids_data.get("imdb_id") if ids_data else None
+
+    # Layer 1: Your Personal Manual Database
+    all_links.extend(get_manual_links_from_db(tmdb_id=tmdb_id, imdb_id=imdb_id))
     
-    # If API fails, try the fallbacks
+    # If no manual links, try automated sources
     if not all_links:
-        print("API failed for movie, trying fallbacks...")
-        ids_data = get_tmdb_data(f"{TMDB_API_BASE}/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
-        imdb_id = ids_data.get("imdb_id") if ids_data else None
-        if imdb_id:
-            all_links.extend(get_fallback_links(imdb_id, 'imdb', 'movie'))
+        print("No manual links found, proceeding to automated sources...")
+        all_links.extend(get_stream_links_from_api(tmdb_id, 'movie'))
+        if not all_links:
+            print("API failed for movie, trying fallbacks...")
+            if imdb_id:
+                all_links.extend(get_fallback_links(imdb_id, 'imdb', 'movie'))
 
     if not all_links:
         return jsonify({"error": "No streaming links found for this movie."}), 404
@@ -149,11 +169,9 @@ def get_episode_links():
     tmdb_id, season_num, ep_num = request.args.get('tmdb_id'), request.args.get('season'), request.args.get('episode')
     if not all([tmdb_id, season_num, ep_num]):
         return jsonify({"error": "tmdb_id, season, and episode are required."}), 400
-
-    # Try the API first
+    
     all_links = get_stream_links_from_api(tmdb_id, 'tv', season_num, ep_num)
     
-    # If API fails, try the fallbacks
     if not all_links:
         print(f"API failed for S{season_num}E{ep_num}, trying fallbacks...")
         ids_data = get_tmdb_data(f"{TMDB_API_BASE}/tv/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
