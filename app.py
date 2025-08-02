@@ -25,17 +25,16 @@ def get_tmdb_data(url):
         print(f"Error fetching TMDB data from {url}: {e}")
         return None
 
-# --- NEW HELPER FUNCTION FOR IMDB LOOKUP ---
 def find_on_tmdb_by_imdb_id(imdb_id):
     """Finds a movie or show on TMDB using its IMDb ID."""
     find_url = f"{TMDB_API_BASE}/find/{imdb_id}?api_key={TMDB_API_KEY}&external_source=imdb_id"
     data = get_tmdb_data(find_url)
-    # The find endpoint returns results in lists like 'movie_results', 'tv_results'
     if data:
-        if data.get('movie_results'):
-            return data['movie_results'][0], 'movie'
-        elif data.get('tv_results'):
-            return data['tv_results'][0], 'tv'
+        results = data.get('movie_results', []) + data.get('tv_results', [])
+        if results:
+            # Determine media type for the first result
+            media_type = 'movie' if 'title' in results[0] else 'tv'
+            return results[0], media_type
     return None, None
 
 def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
@@ -94,7 +93,7 @@ def get_fallback_links(id_value, id_type, media_type, season=None, episode=None)
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend (IMDb Search Enabled) is running!"
+    return "WellPlayer Scraper Backend (IMDb Merged Search) is running!"
 
 @app.route('/search')
 def search():
@@ -102,37 +101,45 @@ def search():
     if not query: return jsonify({"error": "A 'query' parameter is required."}), 400
     if not TMDB_API_KEY: return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
     
-    results = []
-    
-    # First, try a normal search on TMDB
+    tmdb_results = []
+    imdb_result = None
+
+    # 1. Perform the standard title search on TMDB
     search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(query)}"
     data = get_tmdb_data(search_url)
-    
     if data and data.get("results"):
-        results = [
+        tmdb_results = [
             {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4], "poster_path": item.get("poster_path")}
             for item in data["results"] if item.get("media_type") in ["movie", "tv"]
         ]
     
-    # --- NEW IMDB SEARCH LOGIC ---
-    # If the normal search finds nothing AND the query is an IMDb ID, try finding by ID
-    if not results and query.startswith('tt'):
-        print(f"No results for '{query}', trying IMDb ID lookup...")
+    # 2. Independently, check if the query is an IMDb ID
+    if query.startswith('tt'):
         item, media_type = find_on_tmdb_by_imdb_id(query)
         if item and media_type:
-            # Format the single result to match the search result structure
-            results = [{
+            imdb_result = {
                 "id": item.get("id"),
                 "type": media_type,
                 "title": item.get("title") or item.get("name"),
                 "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4],
                 "poster_path": item.get("poster_path")
-            }]
+            }
 
-    if not results:
+    # 3. Merge the results, putting the IMDb result first if it exists
+    final_results = []
+    if imdb_result:
+        final_results.append(imdb_result)
+    
+    # Add TMDB results, avoiding duplicates
+    for res in tmdb_results:
+        is_duplicate = imdb_result and res.get('id') == imdb_result.get('id')
+        if not is_duplicate:
+            final_results.append(res)
+
+    if not final_results:
         return jsonify({"error": f"Could not find '{query}'."}), 404
         
-    return jsonify(results)
+    return jsonify(final_results)
 
 # ... All other endpoints (/movie, /tv, /episodes, /episode-links) are unchanged ...
 @app.route('/movie/<int:tmdb_id>')
