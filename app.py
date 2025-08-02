@@ -1,12 +1,9 @@
 import os
-import re
 import requests
-from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus
 from functools import lru_cache
-from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 CORS(app)
@@ -16,122 +13,137 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 STREAMING_API_URL = "https://consumet-api-movies-nine.vercel.app"
 API_PROVIDERS = ['flixhq', 'goku', 'dramacool']
-MANUAL_SOURCE_API = "https://wellplayer-admin.vercel.app/api/get"
-
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-HEADERS = { 'User-Agent': USER_AGENT, 'Referer': 'https://www.google.com/' }
 
 # --- Helper Functions ---
 @lru_cache(maxsize=128)
 def get_tmdb_data(url):
     try:
-        response = requests.get(url, headers=HEADERS)
+        response = requests.get(url)
         response.raise_for_status()
         return response.json()
-    except Exception as e:
-        print(f"Error fetching TMDB data: {e}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching TMDB data from {url}: {e}")
         return None
 
-# --- Source Functions ---
+# --- NEW HELPER FUNCTION FOR IMDB LOOKUP ---
+def find_on_tmdb_by_imdb_id(imdb_id):
+    """Finds a movie or show on TMDB using its IMDb ID."""
+    find_url = f"{TMDB_API_BASE}/find/{imdb_id}?api_key={TMDB_API_KEY}&external_source=imdb_id"
+    data = get_tmdb_data(find_url)
+    # The find endpoint returns results in lists like 'movie_results', 'tv_results'
+    if data:
+        if data.get('movie_results'):
+            return data['movie_results'][0], 'movie'
+        elif data.get('tv_results'):
+            return data['tv_results'][0], 'tv'
+    return None, None
 
-## --- Personal DB Source --- ##
-def get_manual_links(tmdb_id=None, imdb_id=None, query=None):
-    if not MANUAL_SOURCE_API: return []
+def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
+    all_links = []
+    media_id_str = f"tv/{tmdb_id}" if media_type == 'tv' else f"movie/{tmdb_id}"
+    for provider in API_PROVIDERS:
+        try:
+            print(f"Trying API provider: {provider}")
+            info_url = f"{STREAMING_API_URL}/movies/{provider}/info?id={media_id_str}"
+            info_res = requests.get(info_url, timeout=20)
+            if info_res.status_code != 200: continue
+            info_data = info_res.json()
+            episode_id = None
+            if media_type == 'movie':
+                episode_id = info_data.get('id')
+            else:
+                target_season = next((s for s in info_data.get('episodes', []) if str(s.get('season')) == str(season)), None)
+                if target_season:
+                    target_episode = next((e for e in target_season.get('episodes', []) if str(e.get('number')) == str(episode)), None)
+                    if target_episode:
+                        episode_id = target_episode.get('id')
+            if not episode_id: continue
+            watch_url = f"{STREAMING_API_URL}/movies/{provider}/watch?episodeId={episode_id}&mediaId={media_id_str}"
+            watch_res = requests.get(watch_url, timeout=20)
+            if watch_res.status_code != 200: continue
+            watch_data = watch_res.json()
+            for source in watch_data.get('sources', []):
+                quality = source.get('quality', 'auto')
+                all_links.append({"url": source['url'], "source": f"{provider.title()} ({quality})", "lang": "Original"})
+            if all_links:
+                print(f"Found links from API provider: {provider}")
+                break
+        except Exception as e:
+            print(f"Error with API provider {provider}: {e}")
+            continue
+    return all_links
+
+def get_fallback_links(id_value, id_type, media_type, season=None, episode=None):
+    links = []
     try:
-        params = {}
-        if tmdb_id: params['tmdb_id'] = tmdb_id
-        elif imdb_id: params['imdb_id'] = imdb_id
-        elif query: params['query'] = query
-        else: return []
-        
-        response = requests.get(MANUAL_SOURCE_API, params=params, timeout=10)
-        if response.status_code == 200:
-            return response.json().get('results', [])
+        if id_type == 'imdb':
+            url = f"https://vidsrc.to/embed/{media_type}/{id_value}"
+            if media_type == 'tv': url += f"/{season}/{episode}"
+            links.append({"url": url, "source": "VidSrc.to", "lang": "Backup"})
     except Exception as e:
-        print(f"Error fetching from manual DB: {e}")
-    return []
-
-## --- Automated Sources --- ##
-def get_stream_links_from_api(tmdb_id, media_type, s=None, e=None):
-    # This is the stable API source
-    links = []
-    # ... (code for this function is unchanged) ...
-    return links
-
-def get_fallback_links(imdb_id, media_type, s=None, e=None):
-    # This includes VidSrc.to and 2Embed
-    links = []
-    if not imdb_id: return []
+        print(f"Error with VidSrc.to fallback: {e}")
     try:
-        url = f"https://vidsrc.to/embed/{media_type}/{imdb_id}"
-        if media_type == 'tv': url += f"/{s}/{e}"
-        links.append({"url": url, "source": "VidSrc.to", "lang": "Backup"})
-    except Exception as e: print(f"Error with VidSrc fallback: {e}")
-    try:
-        url = f"https://www.2embed.cc/embed/{media_type}/{imdb_id}"
-        if media_type == 'tv': url += f"&s={s}&e={e}"
-        links.append({"url": url, "source": "2Embed", "lang": "Backup"})
-    except Exception as e: print(f"Error with 2Embed fallback: {e}")
+        if id_type == 'imdb':
+            url = f"https://www.2embed.cc/embed/{media_type}/{id_value}"
+            if media_type == 'tv': url += f"&s={season}&e={episode}"
+            links.append({"url": url, "source": "2Embed", "lang": "Backup"})
+    except Exception as e:
+        print(f"Error with 2Embed fallback: {e}")
     return links
 
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend (Definitive Final) is running!"
+    return "WellPlayer Scraper Backend (IMDb Search Enabled) is running!"
 
 @app.route('/search')
 def search():
     query = request.args.get('query')
     if not query: return jsonify({"error": "A 'query' parameter is required."}), 400
+    if not TMDB_API_KEY: return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
     
-    all_results = []
+    results = []
     
-    # 1. Search TMDB
-    tmdb_search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(query)}"
-    tmdb_data = get_tmdb_data(tmdb_search_url)
-    if tmdb_data and tmdb_data.get("results"):
-        tmdb_results = [
-            {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[:4], "poster_path": item.get("poster_path")}
-            for item in tmdb_data["results"] if item.get("media_type") in ["movie", "tv"]
+    # First, try a normal search on TMDB
+    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(query)}"
+    data = get_tmdb_data(search_url)
+    
+    if data and data.get("results"):
+        results = [
+            {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4], "poster_path": item.get("poster_path")}
+            for item in data["results"] if item.get("media_type") in ["movie", "tv"]
         ]
-        all_results.extend(tmdb_results)
+    
+    # --- NEW IMDB SEARCH LOGIC ---
+    # If the normal search finds nothing AND the query is an IMDb ID, try finding by ID
+    if not results and query.startswith('tt'):
+        print(f"No results for '{query}', trying IMDb ID lookup...")
+        item, media_type = find_on_tmdb_by_imdb_id(query)
+        if item and media_type:
+            # Format the single result to match the search result structure
+            results = [{
+                "id": item.get("id"),
+                "type": media_type,
+                "title": item.get("title") or item.get("name"),
+                "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4],
+                "poster_path": item.get("poster_path")
+            }]
 
-    # 2. Search your personal database
-    manual_results = get_manual_links(query=query)
-    if manual_results:
-        formatted_manual_results = [
-            # Use imdb_id if tmdb_id is null, ensuring a unique ID
-            {"id": item.get("tmdb_id") or item.get("imdb_id"), "type": "movie", "title": item.get("title"), "year": item.get("title", "")[-5:-1], "poster_path": None}
-            for item in manual_results
-        ]
-        all_results.extend(formatted_manual_results)
-
-    if not all_results:
+    if not results:
         return jsonify({"error": f"Could not find '{query}'."}), 404
-    
-    final_results = {str(res.get('id')): res for res in all_results}
-    return jsonify(list(final_results.values()))
+        
+    return jsonify(results)
 
-@app.route('/movie/<string:media_id>')
-def get_movie_details(media_id):
-    all_links = []
-    tmdb_id, imdb_id = (None, media_id) if media_id.startswith('tt') else (int(media_id), None)
-    
-    if not imdb_id and tmdb_id:
+# ... All other endpoints (/movie, /tv, /episodes, /episode-links) are unchanged ...
+@app.route('/movie/<int:tmdb_id>')
+def get_movie_details(tmdb_id):
+    all_links = get_stream_links_from_api(tmdb_id, 'movie')
+    if not all_links:
+        print("API failed for movie, trying fallbacks...")
         ids_data = get_tmdb_data(f"{TMDB_API_BASE}/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
         imdb_id = ids_data.get("imdb_id") if ids_data else None
-
-    # Layer 1: Your Personal Manual Database
-    manual_data = get_manual_links(tmdb_id=tmdb_id, imdb_id=imdb_id)
-    if manual_data:
-        all_links.extend([{"url": item['embed_url'], "source": "My Manual Server", "lang": "Manual"} for item in manual_data])
-    
-    # Layer 2: Automated Sources (if no manual links found)
-    if not all_links and tmdb_id:
-        all_links.extend(get_stream_links_from_api(tmdb_id, 'movie'))
-        if not all_links:
-            if imdb_id: all_links.extend(get_fallback_links(imdb_id, 'imdb', 'movie'))
-
+        if imdb_id:
+            all_links.extend(get_fallback_links(imdb_id, 'imdb', 'movie'))
     if not all_links:
         return jsonify({"error": "No streaming links found for this movie."}), 404
     return jsonify({"links": list({link['url']: link for link in all_links}.values())})
@@ -162,18 +174,15 @@ def get_episode_links():
     tmdb_id, season_num, ep_num = request.args.get('tmdb_id'), request.args.get('season'), request.args.get('episode')
     if not all([tmdb_id, season_num, ep_num]):
         return jsonify({"error": "tmdb_id, season, and episode are required."}), 400
-    
     all_links = get_stream_links_from_api(tmdb_id, 'tv', season_num, ep_num)
-    
     if not all_links:
+        print(f"API failed for S{season_num}E{ep_num}, trying fallbacks...")
         ids_data = get_tmdb_data(f"{TMDB_API_BASE}/tv/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
         imdb_id = ids_data.get("imdb_id") if ids_data else None
         if imdb_id:
             all_links.extend(get_fallback_links(imdb_id, 'imdb', 'tv', season_num, ep_num))
-
     if not all_links:
         return jsonify({"error": f"No sources found for Episode {ep_num}."}), 404
-    
     return jsonify({"links": list({link['url']: link for link in all_links}.values())})
 
 if __name__ == '__main__':
