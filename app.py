@@ -28,8 +28,14 @@ def get_tmdb_data(url):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"Error fetching TMDB data from {url}: {e}")
+        print(f"Error fetching TMDB data: {e}")
         return None
+
+def parse_query_for_language(query):
+    language_keywords = ['hindi', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'dubbed', 'dual audio', 'multi audio']
+    base_query_parts = [part for part in query.split() if part.lower() not in language_keywords]
+    base_query = " ".join(base_query_parts)
+    return base_query if base_query else query, query
 
 # --- Source Functions ---
 
@@ -111,16 +117,20 @@ def get_fallback_links(imdb_id, media_type, s=None, e=None):
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend (Final Hybrid Edition) is running!"
+    return "WellPlayer Scraper Backend (Definitive Hybrid) is running!"
 
 @app.route('/search')
 def search():
     query = request.args.get('query')
     if not query: return jsonify({"error": "A 'query' parameter is required."}), 400
     if not TMDB_API_KEY: return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
-    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(query)}"
+    
+    base_query, _ = parse_query_for_language(query)
+    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(base_query)}"
     data = get_tmdb_data(search_url)
+    
     if not data or not data.get("results"): return jsonify({"error": f"Could not find '{query}'."}), 404
+    
     results = [
         {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4], "poster_path": item.get("poster_path")}
         for item in data["results"] if item.get("media_type") in ["movie", "tv"]
@@ -132,7 +142,6 @@ def get_movie_details(tmdb_id):
     original_query = request.args.get('query')
     all_links = []
     
-    # Run API and HDHub4u scraper in parallel for speed
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_api = executor.submit(get_stream_links_from_api, tmdb_id, 'movie')
         future_hdhub = executor.submit(scrape_hdhub4u, original_query) if original_query else None
@@ -141,7 +150,6 @@ def get_movie_details(tmdb_id):
         if future_hdhub:
             all_links.extend(future_hdhub.result())
 
-    # If the main sources fail, try the simple fallbacks
     if not all_links:
         print("Primary sources failed, trying simple fallbacks...")
         ids_data = get_tmdb_data(f"{TMDB_API_BASE}/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
