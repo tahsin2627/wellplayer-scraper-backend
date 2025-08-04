@@ -1,11 +1,10 @@
 import os
-import re
 import requests
-from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from urllib.parse import quote_plus, urljoin
 from functools import lru_cache
+from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
@@ -28,18 +27,12 @@ def get_tmdb_data(url):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"Error fetching TMDB data: {e}")
+        print(f"Error fetching TMDB data from {url}: {e}")
         return None
-
-def parse_query_for_language(query):
-    language_keywords = ['hindi', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'dubbed', 'dual audio', 'multi audio']
-    base_query_parts = [part for part in query.split() if part.lower() not in language_keywords]
-    base_query = " ".join(base_query_parts)
-    return base_query if base_query else query, query
 
 # --- Source Functions ---
 
-## --- PRIMARY SOURCE: STABLE API --- ##
+## --- LAYER 1: STABLE API --- ##
 def get_stream_links_from_api(tmdb_id, media_type, s=None, e=None):
     all_links = []
     media_id_str = f"tv/{tmdb_id}" if media_type == 'tv' else f"movie/{tmdb_id}"
@@ -70,35 +63,34 @@ def get_stream_links_from_api(tmdb_id, media_type, s=None, e=None):
             continue
     return all_links
 
-## --- SECONDARY SOURCE: HDHub4u for Dubbed Content --- ##
-def scrape_hdhub4u(query):
+## --- LAYER 2: NEW SCRAPER --- ##
+def scrape_cimawbas(query):
     found_links = []
     try:
-        base_url = "https://hdhub4u.build/"
+        base_url = "https://cimawbas.tv/"
         search_url = f"{base_url}?s={quote_plus(query)}"
         search_response = requests.get(search_url, headers=HEADERS, timeout=15)
         if search_response.status_code != 200: return []
         search_soup = BeautifulSoup(search_response.text, 'lxml')
-        first_result = search_soup.select_one('article.post .entry-title a')
-        if not first_result: return []
-        movie_page_url = first_result['href']
-        post_title = first_result.text.lower()
-        movie_page_response = requests.get(movie_page_url, headers=HEADERS, timeout=15)
-        movie_soup = BeautifulSoup(movie_page_response.text, 'lxml')
-        watch_online_link = movie_soup.find('a', class_=["aio-red", "dl-button"], string=re.compile(r'Watch Online', re.IGNORECASE))
-        if not watch_online_link: return []
-        stream_page_url = watch_online_link['href']
-        stream_page_response = requests.get(stream_page_url, headers=HEADERS, timeout=15)
-        stream_soup = BeautifulSoup(stream_page_response.text, 'lxml')
-        iframe = stream_soup.find('iframe')
+        
+        result_link = search_soup.select_one('div.Thumb a')
+        if not result_link: return []
+
+        movie_page_url = result_link['href']
+        post_title = result_link.get('title', '').lower()
+        
+        movie_response = requests.get(movie_page_url, headers=HEADERS, timeout=15)
+        movie_soup = BeautifulSoup(movie_response.text, 'lxml')
+
+        iframe = movie_soup.select_one('.Video iframe')
         if iframe and iframe.has_attr('src'):
-            lang = "Dubbed" if "hindi" in post_title or "dubbed" in post_title or "dual" in post_title else "Original"
-            found_links.append({"url": iframe['src'], "source": "HDHub4u", "lang": lang})
+            lang = "Dubbed" if "dubbed" in post_title else "Original"
+            found_links.append({"url": iframe['src'], "source": "CimaWbas", "lang": lang})
     except Exception as e:
-        print(f"Error scraping HDHub4u: {e}")
+        print(f"Error scraping CimaWbas: {e}")
     return found_links
 
-## --- FALLBACK SOURCES --- ##
+## --- LAYER 3: FALLBACK SOURCES --- ##
 def get_fallback_links(imdb_id, media_type, s=None, e=None):
     links = []
     if not imdb_id: return []
@@ -117,20 +109,16 @@ def get_fallback_links(imdb_id, media_type, s=None, e=None):
 # --- API Endpoints ---
 @app.route('/')
 def index():
-    return "WellPlayer Scraper Backend (Stable Hybrid) is running!"
+    return "WellPlayer Scraper Backend (CimaWbas Edition) is running!"
 
 @app.route('/search')
 def search():
     query = request.args.get('query')
     if not query: return jsonify({"error": "A 'query' parameter is required."}), 400
     if not TMDB_API_KEY: return jsonify({"error": "TMDB_API_KEY is not configured."}), 500
-    
-    base_query, _ = parse_query_for_language(query)
-    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(base_query)}"
+    search_url = f"{TMDB_API_BASE}/search/multi?api_key={TMDB_API_KEY}&query={quote_plus(query)}"
     data = get_tmdb_data(search_url)
-    
     if not data or not data.get("results"): return jsonify({"error": f"Could not find '{query}'."}), 404
-    
     results = [
         {"id": item.get("id"), "type": item.get("media_type"), "title": item.get("title") or item.get("name"), "year": (item.get("release_date", "") or item.get("first_air_date", ""))[0:4], "poster_path": item.get("poster_path")}
         for item in data["results"] if item.get("media_type") in ["movie", "tv"]
@@ -142,17 +130,14 @@ def get_movie_details(tmdb_id):
     original_query = request.args.get('query')
     all_links = []
     
-    # Run API and HDHub4u scraper in parallel to get both results quickly
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_api = executor.submit(get_stream_links_from_api, tmdb_id, 'movie')
-        future_hdhub = executor.submit(scrape_hdhub4u, original_query) if original_query else None
+        future_cimawbas = executor.submit(scrape_cimawbas, original_query) if original_query else None
         
-        # Collect results from the parallel tasks
         all_links.extend(future_api.result())
-        if future_hdhub:
-            all_links.extend(future_hdhub.result())
+        if future_cimawbas:
+            all_links.extend(future_cimawbas.result())
 
-    # If the main sources fail, try the simple fallbacks (this logic is preserved)
     if not all_links:
         print("Primary sources failed, trying simple fallbacks...")
         ids_data = get_tmdb_data(f"{TMDB_API_BASE}/movie/{tmdb_id}/external_ids?api_key={TMDB_API_KEY}")
@@ -189,11 +174,10 @@ def get_episodes():
 
 @app.route('/episode-links')
 def get_episode_links():
-    tmdb__id, season_num, ep_num = request.args.get('tmdb_id'), request.args.get('season'), request.args.get('episode')
+    tmdb_id, season_num, ep_num = request.args.get('tmdb_id'), request.args.get('season'), request.args.get('episode')
     if not all([tmdb_id, season_num, ep_num]):
         return jsonify({"error": "tmdb_id, season, and episode are required."}), 400
 
-    # For TV, the API is the most reliable source
     all_links = get_stream_links_from_api(tmdb_id, 'tv', season_num, ep_num)
     
     if not all_links:
