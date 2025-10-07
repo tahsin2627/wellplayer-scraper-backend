@@ -18,12 +18,11 @@ CORS(app)
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 
-# Existing third-party API fallback (kept)
+# Optional third-party API fallback (kept from your original)
 STREAMING_API_URL = "https://consumet-api-movies-nine.vercel.app"
 API_PROVIDERS = ['flixhq', 'goku', 'dramacool']
 
-# New: provider registry and settings
-# Order reflects priority in your UI (Source 1 / 2 / 3 ...)
+# Provider registry and order
 PROVIDER_ORDER = ["hdhub4u", "cinefreak", "dongobd", "netmirror"]
 
 PROVIDERS = {
@@ -52,16 +51,15 @@ ALLOWED_EMBED_HOSTS = {
     "netmirror.bio",
     "p2pplay.pro",
     "ottbangla.p2pplay.pro",
-    # add more approved hosts as needed
 }
 
-# Simple mirror cache: {provider: (url, expires_at)}
+# Mirror cache: {provider: (url, expires_at)}
 MIRROR_CACHE = {}
 
 # Request defaults
 REQ_TIMEOUT = 12
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; WellPlayerFetcher/1.0; +https://wellplayer.example)"
+    "User-Agent": "Mozilla/5.0 (compatible; WellPlayerFetcher/1.0; +https://example.com)"
 }
 
 # Languages day-1
@@ -79,7 +77,7 @@ LANG_LABELS = {
 }
 
 # ------------------------------
-# TMDB helper
+# TMDB helpers
 # ------------------------------
 @lru_cache(maxsize=128)
 def get_tmdb_data(url):
@@ -98,16 +96,16 @@ def get_tmdb_title_year(tmdb_id, media_type):
         data = get_tmdb_data(f"{TMDB_API_BASE}/movie/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US")
         if not data:
             return None, None
-        title = data.get("title") or data.get("original_title")
+        title = data.get("title") or data.get("original_title") or ""
         year = (data.get("release_date") or "")[:4]
-        return (title or "").strip(), (year or "").strip()
+        return title.strip(), year.strip()
     else:
         data = get_tmdb_data(f"{TMDB_API_BASE}/tv/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US")
         if not data:
             return None, None
-        title = data.get("name") or data.get("original_name")
+        title = data.get("name") or data.get("original_name") or ""
         year = (data.get("first_air_date") or "")[:4]
-        return (title or "").strip(), (year or "").strip()
+        return title.strip(), year.strip()
 
 # ------------------------------
 # Normalization & heuristics
@@ -139,8 +137,8 @@ MULTI_PATTERNS = r"(multi\s*audio|multiaudio|multi\b)"
 
 def normalize_text(s: str) -> str:
     s = s.lower()
-    s = re.sub(r"[```math
-```KATEX_INLINE_OPENKATEX_INLINE_CLOSE\{\}\-\._/|:,;!@#%^&*+=?]", " ", s)
+    # Replace punctuation with space, keep letters/numbers/underscore + whitespace
+    s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -160,13 +158,13 @@ def score_title(candidate_text: str, wanted_title: str, year: str = "", lang_cod
     score = jaccard
 
     # Year boost/penalty
-    if year and year in candidate_text:
+    cand_lower = candidate_text.lower()
+    if year and year in cand_lower:
         score += 0.2
-    elif year and re.search(r"\b\d{4}\b", candidate_text):
+    elif year and re.search(r"\b\d{4}\b", cand_lower):
         score += 0.05
 
     # Language boost
-    cand_lower = candidate_text.lower()
     for code in lang_codes:
         pat = LANG_PATTERNS.get(code)
         if pat and re.search(pat, cand_lower):
@@ -232,7 +230,7 @@ def resolve_mirror(provider: str):
         try:
             r = requests.get(base, timeout=REQ_TIMEOUT, headers=DEFAULT_HEADERS, allow_redirects=True)
             if r.status_code in (200, 301, 302):
-                MIRROR_CACHE[provider] = (base.rstrip("/"), now + 1800)
+                MIRROR_CACHE[provider] = (base.rstrip("/"), now + 1800)  # 30 min
                 return base.rstrip("/")
         except Exception:
             continue
@@ -344,7 +342,7 @@ def extract_embeds_from_page(page_url: str, provider_label: str):
                 "lang": audio_label or "Original",
             })
 
-    # direct anchors to allowed hosts
+    # anchors (buttons/links) pointing to allowed hosts
     for a in soup.select("a[href]"):
         href = a.get("href", "").strip()
         if not href:
@@ -369,6 +367,7 @@ def extract_embeds_from_page(page_url: str, provider_label: str):
                 "lang": audio_label or "Original",
             })
 
+    # de-dup
     uniq = []
     seen = set()
     for l in links:
@@ -382,9 +381,6 @@ def extract_embeds_from_page(page_url: str, provider_label: str):
 # ------------------------------
 def provider_search_and_extract(provider: str, tmdb_id: int, title: str, year: str, media_type: str,
                                 season=None, episode=None, lang_codes=None, want_dubbed=False):
-    """
-    Returns a list of normalized link objects from one provider.
-    """
     if lang_codes is None:
         lang_codes = []
 
@@ -393,7 +389,7 @@ def provider_search_and_extract(provider: str, tmdb_id: int, title: str, year: s
         return []
     provider_label = PROVIDERS[provider]["label"]
 
-    # Special case: NetMirror supports a fast embed URL by ID for many titles
+    # Special case: NetMirror supports a direct embed URL for many titles
     if provider == "netmirror":
         path_type = "movie" if media_type == "movie" else "tv"
         embed_url = f"{base}/{path_type}/{tmdb_id}/?embed=1"
@@ -402,7 +398,7 @@ def provider_search_and_extract(provider: str, tmdb_id: int, title: str, year: s
             links = extract_embeds_from_page(embed_url, provider_label)
             if links:
                 return links
-            # If no inner iframes/anchors were detected, still return the embed page itself
+            # fallback: return the embed page itself
             return [{
                 "url": embed_url,
                 "source": f"{provider_label} (embed)",
@@ -417,9 +413,8 @@ def provider_search_and_extract(provider: str, tmdb_id: int, title: str, year: s
                 "note": None,
                 "lang": "Original",
             }]
-        # Fallback to generic search below if direct embed not available
 
-    # Generic: search → best match → extract embeds
+    # Generic flow for others: search → best match → extract
     queries = build_query_variants(title, year, lang_codes, want_dubbed)
     best = None
     best_score = 0.0
@@ -442,7 +437,7 @@ def provider_search_and_extract(provider: str, tmdb_id: int, title: str, year: s
     if not best:
         return []
 
-    # If NetMirror and we found a /movie/ or /tv/ URL, try its embed variant
+    # If NetMirror via search, try its embed variant too
     if provider == "netmirror" and best.get("url"):
         try_embed = best["url"]
         if "/movie/" in try_embed or "/tv/" in try_embed:
@@ -453,20 +448,16 @@ def provider_search_and_extract(provider: str, tmdb_id: int, title: str, year: s
             links = extract_embeds_from_page(try_embed, provider_label)
             if links:
                 return links
-            # fallback to the page itself if needed
             page_links = extract_embeds_from_page(best["url"], provider_label)
             if page_links:
                 return page_links
 
-    # For all others (HDHub4u, CineFreak, DongoBD) just extract from the page
+    # For others (HDHub4u, CineFreak, DongoBD), extract from page
     links = extract_embeds_from_page(best["url"], provider_label)
     return links
 
 def fetch_links_from_providers(tmdb_id: int, media_type: str, season=None, episode=None,
                                lang_codes=None, want_dubbed=False, strict=False):
-    """
-    Orchestrates fetching across providers. Returns normalized links (may be empty).
-    """
     if lang_codes is None:
         lang_codes = []
 
@@ -486,14 +477,11 @@ def fetch_links_from_providers(tmdb_id: int, media_type: str, season=None, episo
                 links = [l for l in links if (l.get("audio_lang") in lang_codes) or
                          (l.get("audio_lang") in ("dual", "multi") and any(code in LANG_CODES for code in lang_codes))]
             all_links.extend(links)
-            # If you want to stop after first provider success, uncomment:
-            # if links:
-            #     break
         except Exception as e:
             print(f"Provider {prov} error: {e}")
             continue
 
-    # Soft fallback to original if dubbed requested but nothing matched
+    # Soft fallback note if dubbed requested but nothing matched
     if want_dubbed and lang_codes:
         has_requested_lang = any(
             (l.get("audio_lang") in lang_codes) or (l.get("audio_lang") in ("dual", "multi"))
@@ -502,10 +490,11 @@ def fetch_links_from_providers(tmdb_id: int, media_type: str, season=None, episo
         if not has_requested_lang and not strict:
             for l in all_links:
                 if l.get("audio_lang") == "original":
-                    l["note"] = f"No {', '.join([LANG_LABELS.get(c, c) for c in lang_codes])} dub found — playing Original."
+                    wanted = ", ".join([LANG_LABELS.get(c, c) for c in lang_codes])
+                    l["note"] = f"No {wanted} dub found — playing Original."
                     break
 
-    # Rank: non-CAM first, then quality, then provider order
+    # Rank: non-CAM first, then higher quality, then provider order
     def rank_key(l):
         cam_penalty = 1 if (l.get("release_type") in ("CAM", "HDCAM", "HDTC", "TS", "TC")) else 0
         q_order = {"2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "auto": 0}.get(l.get("quality") or "auto", 0)
@@ -515,12 +504,10 @@ def fetch_links_from_providers(tmdb_id: int, media_type: str, season=None, episo
         return (cam_penalty, -q_order, prov_rank)
 
     all_links = sorted(all_links, key=rank_key)
-
-    # Keep top few
     return all_links[:8]
 
 # ------------------------------
-# Existing third-party API fallback
+# Existing third-party API fallback (kept)
 # ------------------------------
 def get_stream_links_from_api(tmdb_id, media_type, season=None, episode=None):
     all_links = []
@@ -618,6 +605,11 @@ def get_fallback_links(id_value, id_type, media_type, season=None, episode=None)
 def index():
     return "WellPlayer Scraper Backend (AI Fetcher + API + Fallbacks) is running!"
 
+@app.route('/favicon.ico')
+def favicon():
+    # Avoid noisy 500s for favicon fetches
+    return ("", 204)
+
 @app.route('/search')
 def search():
     query = request.args.get('query')
@@ -643,18 +635,17 @@ def search():
 
 @app.route('/movie/<int:tmdb_id>')
 def get_movie_details(tmdb_id):
-    # New: dub-aware params
+    # Dub-aware params
     lang_param = (request.args.get("lang") or "").strip()
     lang_codes = [x.strip() for x in lang_param.split(",") if x.strip() in LANG_CODES]
-    want_dubbed = request.args.get("dubbed", "0") in ("1", "true", "True")
-    strict = request.args.get("strict", "0") in ("1", "true", "True")
+    want_dubbed = request.args.get("dubbed", "0").lower() in ("1", "true", "yes")
+    strict = request.args.get("strict", "0").lower() in ("1", "true", "yes")
 
-    # First try new providers (embeds only)
+    # Try providers first (embeds)
     provider_links = fetch_links_from_providers(
         tmdb_id, "movie",
         lang_codes=lang_codes, want_dubbed=want_dubbed, strict=strict
     )
-
     all_links = list(provider_links)
 
     # If none, try existing API providers
@@ -705,10 +696,11 @@ def get_episode_links():
     if not all([tmdb_id, season_num, ep_num]):
         return jsonify({"error": "tmdb_id, season, and episode are required."}), 400
 
+    # Dub-aware params
     lang_param = (request.args.get("lang") or "").strip()
     lang_codes = [x.strip() for x in lang_param.split(",") if x.strip() in LANG_CODES]
-    want_dubbed = request.args.get("dubbed", "0") in ("1", "true", "True")
-    strict = request.args.get("strict", "0") in ("1", "true", "True")
+    want_dubbed = request.args.get("dubbed", "0").lower() in ("1", "true", "yes")
+    strict = request.args.get("strict", "0").lower() in ("1", "true", "yes")
 
     provider_links = fetch_links_from_providers(
         int(tmdb_id), "tv",
